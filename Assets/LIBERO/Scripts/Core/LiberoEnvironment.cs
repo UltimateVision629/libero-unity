@@ -42,8 +42,8 @@ namespace LIBERO.Core
 
         private void ClearScene()
         {
-            if (ArenaRoot != null) { if (Application.isPlaying) Destroy(ArenaRoot); else DestroyImmediate(ArenaRoot); }
-            if (ObjectParent != null) { if (Application.isPlaying) Destroy(ObjectParent); else DestroyImmediate(ObjectParent); }
+            if (ArenaRoot != null) DestroyImmediate(ArenaRoot);
+            if (ObjectParent != null) DestroyImmediate(ObjectParent);
             ArenaRoot = null;
             ObjectParent = null;
             _sceneBuilder = null;
@@ -95,6 +95,9 @@ namespace LIBERO.Core
             ObjectParent.transform.SetParent(transform);
 
             _sceneBuilder.Build(ArenaRoot, ObjectParent);
+
+            BuildRobot();
+
             _isInitialized = true;
 
             Debug.Log("Scene built: " + _sceneBuilder.ObjectStates.Count + " objects, " + _sceneBuilder.FixtureStates.Count + " fixtures");
@@ -117,6 +120,77 @@ namespace LIBERO.Core
             cameraGo.transform.position = new Vector3(1.5f, 1.5f, 1.5f);
             cameraGo.transform.LookAt(Vector3.zero);
             Debug.Log("Auto-created Main Camera");
+        }
+
+        private void BuildRobot()
+        {
+            string robotXmlPath = AssetDatabase.GetAssetPath("robots/panda/robot.xml");
+            if (!System.IO.File.Exists(robotXmlPath))
+            {
+                Debug.LogWarning("Robot XML not found: " + robotXmlPath);
+                return;
+            }
+
+            var result = RobotBuilder.BuildArm(robotXmlPath);
+            if (result.Root == null) return;
+
+            result.Root.name = "Panda";
+            result.Root.transform.SetParent(ArenaRoot.transform);
+            result.Root.transform.localPosition = GetRobotBasePosition();
+
+            // Mount (for tabletop scenes)
+            if (ArenaTypeValue != ArenaType.Floor &&
+                ArenaTypeValue != ArenaType.CoffeeTable &&
+                ArenaTypeValue != ArenaType.LivingRoom)
+            {
+                string mountPath = AssetDatabase.GetAssetPath("mounts/rethink_mount.xml");
+                if (System.IO.File.Exists(mountPath))
+                {
+                    Transform mountParent = result.Root.transform.Find("base") ?? result.Root.transform;
+                    RobotBuilder.AttachMount(mountParent.gameObject, mountPath);
+                }
+            }
+
+            // Gripper
+            if (result.EEFTransform != null)
+            {
+                string gripperPath = AssetDatabase.GetAssetPath("grippers/panda_gripper.xml");
+                if (System.IO.File.Exists(gripperPath))
+                    RobotBuilder.AttachGripper(result.EEFTransform, gripperPath, ref result);
+            }
+
+            if (Robot == null)
+                Robot = result.Root.AddComponent<FrankaPandaController>();
+
+            Robot.Joints = result.Joints;
+            Robot.EEFTransform = result.GripSite ?? result.EEFTransform;
+            Robot.LeftFinger = result.LeftFinger;
+            Robot.RightFinger = result.RightFinger;
+            Robot.InitializeJoints();
+
+            Physics.SyncTransforms();
+            var rootAb = result.Root.GetComponent<ArticulationBody>();
+            if (rootAb != null)
+                rootAb.TeleportRoot(result.Root.transform.position, result.Root.transform.rotation);
+
+            Debug.Log($"[LiberoEnvironment] Robot built at {result.Root.transform.localPosition}");
+        }
+
+        private Vector3 GetRobotBasePosition()
+        {
+            switch (ArenaTypeValue)
+            {
+                case ArenaType.Floor:
+                case ArenaType.CoffeeTable:
+                case ArenaType.LivingRoom:
+                    return new Vector3(0, 0, -0.8f);
+                case ArenaType.Study:
+                    return new Vector3(0, 0, -0.55f);
+                case ArenaType.Kitchen:
+                    return new Vector3(0, 0, -0.55f);
+                default:
+                    return new Vector3(0, 0, -0.6f);
+            }
         }
 
         public Observation Reset()

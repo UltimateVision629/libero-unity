@@ -219,7 +219,7 @@ namespace LIBERO.Core
             float x = float.Parse(parts[1]);
             float y = float.Parse(parts[2]);
             float z = float.Parse(parts[3]);
-            return new Quaternion(-y, z, x, w);
+            return new Quaternion(y, -z, -x, w);
         }
 
         private static Quaternion ParseGeomQuat(XmlNode node)
@@ -232,7 +232,7 @@ namespace LIBERO.Core
             float x = float.Parse(parts[1]);
             float y = float.Parse(parts[2]);
             float z = float.Parse(parts[3]);
-            return new Quaternion(-y, z, x, w);
+            return new Quaternion(y, -z, -x, w);
         }
 
         private static Vector3 ParseSize(XmlNode node)
@@ -348,13 +348,18 @@ namespace LIBERO.Core
             string fullPath = Path.Combine(baseDir, file).Replace('/', Path.DirectorySeparatorChar);
             string key = $"{fullPath}|{scale}";
             if (_meshCache.TryGetValue(key, out Mesh cached))
-                return cached;
+            {
+                if (cached != null && cached.vertexCount > 0)
+                    return cached;
+                _meshCache.Remove(key);
+            }
 
             if (File.Exists(fullPath))
             {
                 try
                 {
                     Mesh mesh = MeshFileParser.Load(fullPath, scale);
+                    mesh.hideFlags = HideFlags.DontSave;
                     _meshCache[key] = mesh;
                     return mesh;
                 }
