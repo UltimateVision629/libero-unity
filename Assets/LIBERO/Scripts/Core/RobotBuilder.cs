@@ -60,6 +60,16 @@ namespace LIBERO.Core
 
             result.Joints = jointList.ToArray();
 
+            for (int i = 0; i < jointList.Count - 1; i++)
+            {
+                var colsA = GetLinkColliders(jointList[i].gameObject);
+                var colsB = GetLinkColliders(jointList[i + 1].gameObject);
+                foreach (var ca in colsA)
+                    foreach (var cb in colsB)
+                        if (ca != null && cb != null)
+                            Physics.IgnoreCollision(ca, cb);
+            }
+
             Debug.Log($"[RobotBuilder] Built Arm: {jointList.Count} joints, EEF={result.EEFTransform != null}"
                 + $" base={result.Root.transform.Find("base")?.position.y:F3}"
                 + $" link0={result.Root.transform.Find("base/link0")?.position.y:F3}"
@@ -287,7 +297,6 @@ namespace LIBERO.Core
                             var bc = colGo.AddComponent<BoxCollider>();
                             bc.center = b.center - ParsePos(geom);
                             bc.size = b.size;
-                            bc.isTrigger = true;
                         }
                         else
                         {
@@ -367,6 +376,18 @@ namespace LIBERO.Core
                 BuildBodyHierarchy(bodyGo.transform, child, baseDir, meshFiles, materials,
                     rootGo, ref result, ref jointList, isRoot: false, enableArticulation: enableArticulation);
             }
+        }
+
+        private static List<Collider> GetLinkColliders(GameObject linkObj)
+        {
+            var cols = new List<Collider>();
+            foreach (var c in linkObj.GetComponentsInChildren<Collider>())
+            {
+                var ab = c.GetComponentInParent<ArticulationBody>();
+                if (ab != null && ab.gameObject == linkObj)
+                    cols.Add(c);
+            }
+            return cols;
         }
 
         private static void AlignAnchors(ArticulationBody childAb, Vector3 localPos)
