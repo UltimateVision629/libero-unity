@@ -5,7 +5,7 @@ namespace LIBERO.Core
     public class KeyboardController : MonoBehaviour
     {
         public FrankaPandaController Robot;
-        public float MoveSpeed = 0.5f;
+        public float MoveSpeed = 2.0f;
         public float RotSpeed = 2.0f;
         public float JointSpeed = 30f;
 
@@ -64,15 +64,15 @@ namespace LIBERO.Core
             {
                 float[] action = new float[7];
 
-                float posStep = MoveSpeed * dt / 0.02f;
-                float rotStep = RotSpeed * dt / 0.3f;
+                float posStep = MoveSpeed * dt / 0.02f * 0.5f;
+                float rotStep = RotSpeed * dt / 0.3f * 0.5f;
 
-                if (Input.GetKey(KeyCode.W)) action[2] =  posStep;
-                if (Input.GetKey(KeyCode.S)) action[2] = -posStep;
+                if (Input.GetKey(KeyCode.W)) action[2] =  posStep * 0.25f;
+                if (Input.GetKey(KeyCode.S)) action[2] = -posStep * 0.25f;
                 if (Input.GetKey(KeyCode.A)) action[0] = -posStep;
                 if (Input.GetKey(KeyCode.D)) action[0] =  posStep;
-                if (Input.GetKey(KeyCode.R)) action[1] =  posStep;
-                if (Input.GetKey(KeyCode.F)) action[1] = -posStep;
+                if (Input.GetKey(KeyCode.R)) action[1] =  posStep * 0.25f;
+                if (Input.GetKey(KeyCode.F)) action[1] = -posStep * 0.25f;
 
                 if (Input.GetKey(KeyCode.Z)) action[3] = -rotStep;
                 if (Input.GetKey(KeyCode.X)) action[3] =  rotStep;

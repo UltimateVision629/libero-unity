@@ -37,9 +37,9 @@ namespace LIBERO.Core
                 A[i * dofCount + i] += lambda2;
 
             float[] b = new float[dofCount];
-            b[0] = deltaPos.x * maxAngle;
-            b[1] = deltaPos.y * maxAngle;
-            b[2] = deltaPos.z * maxAngle;
+            b[0] = deltaPos.x;
+            b[1] = deltaPos.y;
+            b[2] = deltaPos.z;
             b[3] = deltaRot.x;
             b[4] = deltaRot.y;
             b[5] = deltaRot.z;

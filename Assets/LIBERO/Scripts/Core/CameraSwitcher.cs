@@ -29,9 +29,9 @@ namespace LIBERO.Core
 
         void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F1)) ApplyPreset(0);
-            if (Input.GetKeyDown(KeyCode.F2)) ApplyPreset(1);
-            if (Input.GetKeyDown(KeyCode.F3)) ApplyPreset(2);
+            if (Input.GetKeyDown(KeyCode.Alpha8)) ApplyPreset(0);
+            if (Input.GetKeyDown(KeyCode.Alpha9)) ApplyPreset(1);
+            if (Input.GetKeyDown(KeyCode.Alpha0)) ApplyPreset(2);
         }
 
         void ApplyPreset(int i)
