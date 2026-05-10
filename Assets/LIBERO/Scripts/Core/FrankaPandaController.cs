@@ -18,7 +18,14 @@ namespace LIBERO.Core
         public float PositionScale = 0.05f;
         public float GripperScale = 0.1f;
 
+        [Header("IK Control")]
+        public bool UseIK = true;
+        public float DampingLambda = 0.01f;
+        public float IKPosScale = 0.02f;
+        public float IKRotScale = 0.3f;
+
         private bool _initialized;
+        private ArticulationBody _rootAB;
 
         private void Start()
         {
@@ -39,8 +46,11 @@ namespace LIBERO.Core
                 }
             }
 
+            if (Joints != null && Joints.Length > 0)
+                _rootAB = GetComponent<ArticulationBody>();
+
             _initialized = true;
-            Debug.Log("FrankaPandaController initialized");
+            Debug.Log($"FrankaPandaController initialized, rootAB={_rootAB != null}");
         }
 
         public void ApplyAction(float[] action)
@@ -48,12 +58,30 @@ namespace LIBERO.Core
             if (!_initialized || Joints == null) return;
             if (action == null || action.Length < 6) return;
 
-            GetJointPositions(out float[] currentJoints);
+            if (UseIK && _rootAB != null)
+            {
+                Vector3 dPos = new Vector3(action[0], action[1], action[2]) * IKPosScale;
+                Vector3 dRot = new Vector3(action[3], action[4], action[5]) * IKRotScale;
+                float[] dTheta = JacobianSolver.DampedLeastSquares(
+                    _rootAB, Joints, 6, dPos, dRot, DampingLambda, 0.25f);
 
-            for (int i = 0; i < Mathf.Min(currentJoints.Length, action.Length - 1); i++)
-                currentJoints[i] += action[i] * PositionScale;
-
-            SetJointPositions(currentJoints);
+                if (dTheta != null && dTheta.Length == Joints.Length)
+                {
+                    for (int i = 0; i < Joints.Length; i++)
+                    {
+                        var drive = Joints[i].xDrive;
+                        drive.target += dTheta[i] * Mathf.Rad2Deg;
+                        Joints[i].xDrive = drive;
+                    }
+                }
+            }
+            else if (!UseIK)
+            {
+                GetJointPositions(out float[] currentJoints);
+                for (int i = 0; i < Mathf.Min(currentJoints.Length, action.Length - 1); i++)
+                    currentJoints[i] += action[i] * PositionScale;
+                SetJointPositions(currentJoints);
+            }
 
             if (action.Length >= 7)
                 SetGripper(action[6]);
@@ -75,7 +103,7 @@ namespace LIBERO.Core
             for (int i = 0; i < Mathf.Min(Joints.Length, positions.Length); i++)
             {
                 var drive = Joints[i].xDrive;
-                drive.target = positions[i];
+                drive.target = positions[i] * Mathf.Rad2Deg;
                 Joints[i].xDrive = drive;
             }
         }
@@ -119,8 +147,11 @@ namespace LIBERO.Core
 
         public void ResetToHomePose()
         {
-            SetJointPositions(new float[] { 0, -0.785f, 0, -2.356f, 0, 1.571f, 0.785f });
+            SetJointPositions(new float[] { 
+                0, -0.785f, 0, -2.356f, 0, 1.571f, 0.785f 
+            });
             SetGripper(0.04f);
+            Debug.Log("[FPC] Home pose set (radians)");
         }
 
         public Vector3 GetRobotStateVector()

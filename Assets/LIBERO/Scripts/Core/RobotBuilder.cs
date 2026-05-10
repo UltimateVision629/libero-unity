@@ -236,8 +236,9 @@ namespace LIBERO.Core
                         var drive = ab.xDrive;
                         drive.lowerLimit = range[0] * Mathf.Rad2Deg;
                         drive.upperLimit = range[1] * Mathf.Rad2Deg;
-                        drive.stiffness = 0f;
-                        drive.damping = 0.1f;
+                        drive.stiffness = 10000f;
+                        drive.damping = 200f;
+                        drive.forceLimit = 200f;
                         ab.xDrive = drive;
                     }
 

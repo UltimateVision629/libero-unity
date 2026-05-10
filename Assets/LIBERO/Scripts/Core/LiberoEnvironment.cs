@@ -112,31 +112,91 @@ namespace LIBERO.Core
 
         private void EnsureCamera()
         {
-            if (Camera.main != null) return;
+            if (Camera.main != null) DestroyImmediate(Camera.main.gameObject);
 
             var cameraGo = new GameObject("Main Camera");
             var cam = cameraGo.AddComponent<Camera>();
             cameraGo.tag = "MainCamera";
-            cameraGo.transform.position = new Vector3(1.5f, 1.5f, 1.5f);
-            cameraGo.transform.LookAt(Vector3.zero);
-            Debug.Log("Auto-created Main Camera");
+            cameraGo.AddComponent<CameraSwitcher>();
+            Debug.Log("Auto-created Main Camera with CameraSwitcher");
         }
 
         private void BuildRobot()
         {
-            string robotXmlPath = AssetDatabase.GetAssetPath("robots/panda/robot.xml");
-            if (!System.IO.File.Exists(robotXmlPath))
+            GameObject panda = null;
+            ArticulationBody[] joints = null;
+            Transform eef = null;
+            ArticulationBody leftFinger = null, rightFinger = null;
+
+            // Try URDF prefab first
+            var prefab = Resources.Load<GameObject>("Robots/Panda");
+            if (prefab != null)
             {
-                Debug.LogWarning("Robot XML not found: " + robotXmlPath);
-                return;
+                panda = Object.Instantiate(prefab);
+                panda.name = "Panda";
+
+                // Configure all ArticulationBodies
+                var allABs = panda.GetComponentsInChildren<ArticulationBody>();
+                // Find true root AB (URDF Importer puts it on a child, not root GO)
+                foreach (var ab in allABs)
+                {
+                    if (ab.transform.parent == panda.transform ||
+                        ab.transform.parent?.GetComponent<ArticulationBody>() == null)
+                    {
+                        ab.immovable = true;
+                        ab.jointType = ArticulationJointType.FixedJoint;
+                        break;
+                    }
+                }
+
+                var jointList = new List<ArticulationBody>();
+                foreach (var ab in allABs)
+                {
+                    if (ab.jointType == ArticulationJointType.RevoluteJoint)
+                    {
+                        ab.twistLock = ArticulationDofLock.LimitedMotion;
+                        var drive = ab.xDrive;
+                        drive.stiffness = 10000f;
+                        drive.damping = 200f;
+                        drive.forceLimit = 200f;
+                        ab.xDrive = drive;
+                        jointList.Add(ab);
+                    }
+                    else if (ab.jointType == ArticulationJointType.PrismaticJoint)
+                    {
+                        ab.linearLockX = ArticulationDofLock.LimitedMotion;
+                        var drive = ab.xDrive;
+                        drive.stiffness = 1000f;
+                        drive.damping = 100f;
+                        ab.xDrive = drive;
+                        if (ab.name.Contains("left") || ab.name.Contains("Left"))
+                            leftFinger = ab;
+                        else if (ab.name.Contains("right") || ab.name.Contains("Right"))
+                            rightFinger = ab;
+                    }
+                }
+                joints = jointList.ToArray();
+                eef = panda.transform.FindRecursive("panda_grasptarget")
+                    ?? panda.transform;
+            }
+            else
+            {
+                // Fallback: build from URDF manually
+                string urdfPath = AssetDatabase.GetAssetPath("robots/panda_urdf/panda.urdf");
+                string meshDir = AssetDatabase.GetAssetPath("robots/panda");
+                if (!System.IO.File.Exists(urdfPath)) return;
+
+                var result = UrdfArmBuilder.Build(urdfPath, meshDir);
+                if (result.Root == null) return;
+                panda = result.Root;
+                joints = result.Joints;
+                eef = result.GripSite ?? result.EEFTransform;
+                leftFinger = result.LeftFinger;
+                rightFinger = result.RightFinger;
             }
 
-            var result = RobotBuilder.BuildArm(robotXmlPath);
-            if (result.Root == null) return;
-
-            result.Root.name = "Panda";
-            result.Root.transform.SetParent(ArenaRoot.transform);
-            result.Root.transform.localPosition = GetRobotBasePosition();
+            panda.transform.SetParent(ArenaRoot.transform);
+            panda.transform.localPosition = GetRobotBasePosition();
 
             // Mount (for tabletop scenes)
             if (ArenaTypeValue != ArenaType.Floor &&
@@ -146,34 +206,46 @@ namespace LIBERO.Core
                 string mountPath = AssetDatabase.GetAssetPath("mounts/rethink_mount.xml");
                 if (System.IO.File.Exists(mountPath))
                 {
-                    Transform mountParent = result.Root.transform.Find("base") ?? result.Root.transform;
+                    Transform mountParent = panda.transform.FindRecursive("panda_link0")
+                        ?? panda.transform;
                     RobotBuilder.AttachMount(mountParent.gameObject, mountPath);
                 }
             }
 
-            // Gripper
-            if (result.EEFTransform != null)
-            {
-                string gripperPath = AssetDatabase.GetAssetPath("grippers/panda_gripper.xml");
-                if (System.IO.File.Exists(gripperPath))
-                    RobotBuilder.AttachGripper(result.EEFTransform, gripperPath, ref result);
-            }
-
             if (Robot == null)
-                Robot = result.Root.AddComponent<FrankaPandaController>();
+                Robot = panda.AddComponent<FrankaPandaController>();
 
-            Robot.Joints = result.Joints;
-            Robot.EEFTransform = result.GripSite ?? result.EEFTransform;
-            Robot.LeftFinger = result.LeftFinger;
-            Robot.RightFinger = result.RightFinger;
+            Robot.Joints = joints;
+            Robot.EEFTransform = eef;
+            Robot.LeftFinger = leftFinger;
+            Robot.RightFinger = rightFinger;
             Robot.InitializeJoints();
 
             Physics.SyncTransforms();
-            var rootAb = result.Root.GetComponent<ArticulationBody>();
-            if (rootAb != null)
-                rootAb.TeleportRoot(result.Root.transform.position, result.Root.transform.rotation);
+            var rootAb2 = FindRootArticulationBody(panda);
+            if (rootAb2 != null)
+                rootAb2.TeleportRoot(panda.transform.position, panda.transform.rotation);
 
-            Debug.Log($"[LiberoEnvironment] Robot built at {result.Root.transform.localPosition}");
+            if (panda.GetComponent<KeyboardController>() == null)
+            {
+                var kbd = panda.AddComponent<KeyboardController>();
+                kbd.Robot = Robot;
+            }
+
+            Debug.Log($"[LiberoEnvironment] Robot built at {panda.transform.localPosition}, "
+                + $"joints={joints?.Length}, eef={eef != null}");
+        }
+
+        private static ArticulationBody FindRootArticulationBody(GameObject go)
+        {
+            var abs = go.GetComponentsInChildren<ArticulationBody>();
+            foreach (var ab in abs)
+            {
+                if (ab.transform.parent == go.transform ||
+                    ab.transform.parent?.GetComponent<ArticulationBody>() == null)
+                    return ab;
+            }
+            return null;
         }
 
         private Vector3 GetRobotBasePosition()
@@ -356,6 +428,20 @@ namespace LIBERO.Core
                 return objState;
             if (builder.FixtureStates.TryGetValue(objectName, out var fixState))
                 return fixState;
+            return null;
+        }
+    }
+
+    internal static class TransformExtensions
+    {
+        public static Transform FindRecursive(this Transform parent, string name)
+        {
+            if (parent.name == name) return parent;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var found = parent.GetChild(i).FindRecursive(name);
+                if (found != null) return found;
+            }
             return null;
         }
     }
