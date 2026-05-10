@@ -17,6 +17,7 @@ namespace LIBERO.Core
         [Header("Control")]
         public float PositionScale = 0.05f;
         public float GripperScale = 0.1f;
+        public ArticulationBody RootAB { get; set; }
 
         [Header("IK Control")]
         public bool UseIK = true;
@@ -47,7 +48,7 @@ namespace LIBERO.Core
             }
 
             if (Joints != null && Joints.Length > 0)
-                _rootAB = GetComponent<ArticulationBody>();
+                _rootAB = RootAB ?? GetComponent<ArticulationBody>();
 
             _initialized = true;
             Debug.Log($"FrankaPandaController initialized, rootAB={_rootAB != null}");
@@ -78,8 +79,8 @@ namespace LIBERO.Core
             else if (!UseIK)
             {
                 GetJointPositions(out float[] currentJoints);
-                for (int i = 0; i < Mathf.Min(currentJoints.Length, action.Length - 1); i++)
-                    currentJoints[i] += action[i] * PositionScale;
+                for (int i = 0; i < Mathf.Min(currentJoints.Length, action.Length); i++)
+                    currentJoints[i] += action[i];
                 SetJointPositions(currentJoints);
             }
 
@@ -103,7 +104,7 @@ namespace LIBERO.Core
             for (int i = 0; i < Mathf.Min(Joints.Length, positions.Length); i++)
             {
                 var drive = Joints[i].xDrive;
-                drive.target = positions[i] * Mathf.Rad2Deg;
+                drive.target = positions[i];
                 Joints[i].xDrive = drive;
             }
         }
@@ -148,10 +149,10 @@ namespace LIBERO.Core
         public void ResetToHomePose()
         {
             SetJointPositions(new float[] { 
-                0, -0.785f, 0, -2.356f, 0, 1.571f, 0.785f 
+                0, -45f, 0, -135f, 0, 90f, 45f 
             });
             SetGripper(0.04f);
-            Debug.Log("[FPC] Home pose set (radians)");
+            Debug.Log("[FPC] Home pose set (degrees)");
         }
 
         public Vector3 GetRobotStateVector()

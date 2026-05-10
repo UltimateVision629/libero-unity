@@ -29,15 +29,14 @@ namespace LIBERO.Core
 
         void Update()
         {
-            for (int i = 0; i < System.Math.Min(presets.Length, 9); i++)
-            {
-                if (Input.GetKeyDown(KeyCode.Alpha1 + i))
-                    ApplyPreset(i);
-            }
+            if (Input.GetKeyDown(KeyCode.F1)) ApplyPreset(0);
+            if (Input.GetKeyDown(KeyCode.F2)) ApplyPreset(1);
+            if (Input.GetKeyDown(KeyCode.F3)) ApplyPreset(2);
         }
 
         void ApplyPreset(int i)
         {
+            if (i >= presets.Length) return;
             _index = i;
             var cam = GetComponent<Camera>();
             cam.transform.position = presets[i].position;

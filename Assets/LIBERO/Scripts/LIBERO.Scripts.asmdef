@@ -1,7 +1,7 @@
 {
   "name": "LIBERO.Scripts",
   "rootNamespace": "LIBERO",
-  "references": [],
+  "references": ["Unity.Robotics.UrdfImporter"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

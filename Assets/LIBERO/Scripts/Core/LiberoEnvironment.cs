@@ -128,16 +128,18 @@ namespace LIBERO.Core
             Transform eef = null;
             ArticulationBody leftFinger = null, rightFinger = null;
 
-            // Try URDF prefab first
             var prefab = Resources.Load<GameObject>("Robots/Panda");
             if (prefab != null)
             {
                 panda = Object.Instantiate(prefab);
                 panda.name = "Panda";
 
-                // Configure all ArticulationBodies
+                Object.Destroy(panda.GetComponent<Unity.Robotics.UrdfImporter.Control.Controller>());
+                Object.Destroy(panda.GetComponent<Unity.Robotics.UrdfImporter.Control.FKRobot>());
+                foreach (var jc in panda.GetComponentsInChildren<JointControl>())
+                    Object.Destroy(jc);
+
                 var allABs = panda.GetComponentsInChildren<ArticulationBody>();
-                // Find true root AB (URDF Importer puts it on a child, not root GO)
                 foreach (var ab in allABs)
                 {
                     if (ab.transform.parent == panda.transform ||
@@ -181,7 +183,6 @@ namespace LIBERO.Core
             }
             else
             {
-                // Fallback: build from URDF manually
                 string urdfPath = AssetDatabase.GetAssetPath("robots/panda_urdf/panda.urdf");
                 string meshDir = AssetDatabase.GetAssetPath("robots/panda");
                 if (!System.IO.File.Exists(urdfPath)) return;
@@ -198,7 +199,6 @@ namespace LIBERO.Core
             panda.transform.SetParent(ArenaRoot.transform);
             panda.transform.localPosition = GetRobotBasePosition();
 
-            // Mount (for tabletop scenes)
             if (ArenaTypeValue != ArenaType.Floor &&
                 ArenaTypeValue != ArenaType.CoffeeTable &&
                 ArenaTypeValue != ArenaType.LivingRoom)
@@ -215,11 +215,13 @@ namespace LIBERO.Core
             if (Robot == null)
                 Robot = panda.AddComponent<FrankaPandaController>();
 
+            Robot.RootAB = FindRootArticulationBody(panda);
             Robot.Joints = joints;
             Robot.EEFTransform = eef;
             Robot.LeftFinger = leftFinger;
             Robot.RightFinger = rightFinger;
             Robot.InitializeJoints();
+            Robot.ResetToHomePose();
 
             Physics.SyncTransforms();
             var rootAb2 = FindRootArticulationBody(panda);
@@ -283,7 +285,6 @@ namespace LIBERO.Core
             if (Robot != null)
                 Robot.ResetToHomePose();
 
-            // Let physics settle
             StartCoroutine(WaitForPhysicsSettle());
 
             return GatherObservation();
