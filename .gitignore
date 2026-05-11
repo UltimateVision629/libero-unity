@@ -19,6 +19,8 @@
 *.VC.db
 *.unityproj
 *.userprefs
+*.scene
+*.scene.meta
 
 # Asset meta files should NOT be ignored
 # !*.meta
