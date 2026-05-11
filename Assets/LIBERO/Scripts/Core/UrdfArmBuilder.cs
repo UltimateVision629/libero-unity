@@ -5,9 +5,18 @@ using UnityEngine;
 
 namespace LIBERO.Core
 {
+    public class RobotBuildConfig
+    {
+        public string RootLinkName;
+        public string[] EEFLinkNames;
+        public string[] FingerLinkNames;
+        public string GripperJointLinkName;
+        public string GripSiteLinkName;
+    }
+
     public static class UrdfArmBuilder
     {
-        public static RobotBuildResult Build(string urdfPath, string meshBaseDir)
+        public static RobotBuildResult Build(string urdfPath, string meshBaseDir, RobotBuildConfig config = null)
         {
             if (!File.Exists(urdfPath)) return default;
 
@@ -19,7 +28,7 @@ namespace LIBERO.Core
             var linkMap = ParseLinks(rootNode);
             var jointList = new List<ArticulationBody>();
 
-            var root = new GameObject("PandaURDF");
+            var root = new GameObject(Path.GetFileNameWithoutExtension(urdfPath) + "_URDF");
             var rootAb = root.AddComponent<ArticulationBody>();
             rootAb.immovable = true;
             rootAb.jointType = ArticulationJointType.FixedJoint;
@@ -27,11 +36,21 @@ namespace LIBERO.Core
 
             var result = new RobotBuildResult { Root = root };
 
-            XmlNode firstLink = rootNode.SelectSingleNode("link[@name='panda_link0']");
+            string rootLinkName = config?.RootLinkName;
+            if (string.IsNullOrEmpty(rootLinkName))
+                rootLinkName = FindRootLink(rootNode);
+
+            if (string.IsNullOrEmpty(rootLinkName))
+            {
+                Debug.LogError("[UrdfArm] Could not determine root link");
+                return result;
+            }
+
+            XmlNode firstLink = rootNode.SelectSingleNode($"link[@name='{rootLinkName}']");
             if (firstLink == null) return result;
 
             BuildLink(firstLink, root.transform, linkMap, rootNode, root,
-                ref result, ref jointList, meshBaseDir);
+                ref result, ref jointList, meshBaseDir, config);
 
             result.Joints = jointList.ToArray();
 
@@ -47,8 +66,29 @@ namespace LIBERO.Core
 
             Debug.Log($"[UrdfArm] Built: {jointList.Count} joints, "
                 + $"EEF={result.EEFTransform != null} "
-                + $"L={result.LeftFinger != null} R={result.RightFinger != null}");
+                + $"L={result.LeftFinger != null} R={result.RightFinger != null} "
+                + $"GripJ={result.GripperJoint != null}");
             return result;
+        }
+
+        private static string FindRootLink(XmlElement root)
+        {
+            var childLinks = new HashSet<string>();
+            foreach (XmlNode jointNode in root.SelectNodes("joint"))
+            {
+                string childName = GetAttr(jointNode.SelectSingleNode("child"), "link");
+                if (!string.IsNullOrEmpty(childName)) childLinks.Add(childName);
+            }
+
+            foreach (XmlNode linkNode in root.SelectNodes("link"))
+            {
+                string name = GetAttr(linkNode, "name");
+                if (!string.IsNullOrEmpty(name) && !childLinks.Contains(name))
+                    return name;
+            }
+
+            XmlNode first = root.SelectSingleNode("link");
+            return first != null ? GetAttr(first, "name") : null;
         }
 
         private static Dictionary<string, LinkInfo> ParseLinks(XmlElement root)
@@ -106,7 +146,8 @@ namespace LIBERO.Core
         private static void BuildLink(XmlNode linkNode, Transform parent,
             Dictionary<string, LinkInfo> linkMap, XmlElement rootNode,
             GameObject rootGo, ref RobotBuildResult result,
-            ref List<ArticulationBody> jointList, string meshBaseDir)
+            ref List<ArticulationBody> jointList, string meshBaseDir,
+            RobotBuildConfig config)
         {
             string linkName = GetAttr(linkNode, "name");
             if (string.IsNullOrEmpty(linkName)) return;
@@ -117,7 +158,6 @@ namespace LIBERO.Core
                 $"joint[child/@link='{linkName}']");
             if (jointNode == null)
             {
-                // Root link (panda_link0) — no parent joint, add Fixed AB to maintain chain
                 go.transform.SetParent(parent, false);
                 go.transform.localPosition = Vector3.zero;
                 go.transform.localRotation = Quaternion.identity;
@@ -193,15 +233,29 @@ namespace LIBERO.Core
                     ab.parentAnchorPosition = pos;
                 }
 
-                // Track EEF / fingers
-                if (linkName == "panda_link8" || linkName == "panda_hand")
+                // Track EEF
+                if (IsNameMatch(linkName, config?.EEFLinkNames,
+                    new[] { "panda_link8", "panda_hand" }))
                     result.EEFTransform = go.transform;
-                if (linkName == "panda_grasptarget")
+
+                if (IsNameMatch(linkName, config?.GripSiteLinkName != null
+                    ? new[] { config.GripSiteLinkName }
+                    : null,
+                    new[] { "panda_grasptarget" }))
                     result.GripSite = go.transform;
-                if (linkName == "panda_leftfinger")
+
+                // Track fingers / gripper
+                if (IsNameMatch(linkName, config?.FingerLinkNames,
+                    new[] { "panda_leftfinger" }))
                     result.LeftFinger = ab;
-                if (linkName == "panda_rightfinger")
+
+                if (IsNameMatch(linkName, config?.FingerLinkNames,
+                    new[] { "panda_rightfinger" }))
                     result.RightFinger = ab;
+
+                if (!string.IsNullOrEmpty(config?.GripperJointLinkName)
+                    && linkName == config.GripperJointLinkName)
+                    result.GripperJoint = ab;
             }
 
             // Load meshes
@@ -221,9 +275,25 @@ namespace LIBERO.Core
                         $"link[@name='{childLinkName}']");
                     if (childNode != null)
                         BuildLink(childNode, go.transform, linkMap, rootNode,
-                            rootGo, ref result, ref jointList, meshBaseDir);
+                            rootGo, ref result, ref jointList, meshBaseDir, config);
                 }
             }
+        }
+
+        private static bool IsNameMatch(string linkName, string[] configNames, string[] defaults)
+        {
+            if (configNames != null)
+            {
+                foreach (var n in configNames)
+                    if (n == linkName) return true;
+                return false;
+            }
+            if (defaults != null)
+            {
+                foreach (var n in defaults)
+                    if (n == linkName) return true;
+            }
+            return false;
         }
 
         private static void LoadLinkMeshes(GameObject go, LinkInfo info, string meshBaseDir)
@@ -278,10 +348,8 @@ namespace LIBERO.Core
 
         private static string ResolveMesh(string urdfFilename, string meshBaseDir)
         {
-            // URDF: package://meshes/visual/link0.obj
-            // Map to existing robosuite: robots/panda/obj_meshes/link0_vis/link0_vis_0.obj
             string relative = urdfFilename.Replace("package://meshes/", "");
-            string fileName = Path.GetFileName(relative); // link0.obj
+            string fileName = Path.GetFileName(relative);
 
             if (fileName.Contains("finger"))
                 return Path.Combine(meshBaseDir, "obj_meshes", "link7_vis", "link7_vis_0.obj");
@@ -289,18 +357,15 @@ namespace LIBERO.Core
             if (fileName.Contains("hand"))
                 return Path.Combine(meshBaseDir, "obj_meshes", "link7_vis", "link7_vis_0.obj");
 
-            // Match link0..link7
             for (int i = 0; i <= 7; i++)
             {
                 if (fileName.Contains($"link{i}"))
                 {
-                    // Use first visual mesh from robosuite
                     string subDir = $"link{i}_vis";
                     string firstObj = $"link{i}_vis_0.obj";
                     string candidate = Path.Combine(meshBaseDir, "obj_meshes", subDir, firstObj);
                     if (File.Exists(candidate))
                         return candidate;
-                    // Fallback: try all files in subdir
                     string dir = Path.Combine(meshBaseDir, "obj_meshes", subDir);
                     if (Directory.Exists(dir))
                     {
@@ -324,10 +389,6 @@ namespace LIBERO.Core
 
             string[] rp = rpy.Split(' ');
             float roll = float.Parse(rp[0]), pitch = float.Parse(rp[1]), yaw = float.Parse(rp[2]);
-            // URDF rpy (Z-up RH) → Unity Euler (Y-up LH)
-            // R_URDF = Rz(yaw) * Ry(pitch) * Rx(roll), Z-up
-            // In Unity Y-up: axes map as {X_U=-Y_M, Y_U=Z_M, Z_U=X_M}
-            // After axis swap + sign flip for LH → use negated roll/pitch
             Quaternion rot = Quaternion.Euler(
                 roll * Mathf.Rad2Deg * -1,
                 pitch * Mathf.Rad2Deg * -1,
@@ -340,7 +401,6 @@ namespace LIBERO.Core
         {
             string[] p = axisStr.Split(' ');
             float mx = float.Parse(p[0]), my = float.Parse(p[1]), mz = float.Parse(p[2]);
-            // URDF axis in Z-up → Unity Y-up
             return new Vector3(-my, mz, mx).normalized;
         }
 

@@ -13,6 +13,8 @@ namespace LIBERO.Core
         private bool _jointMode;
         private int _selectedJoint;
 
+        private int ArmJoints => Robot != null ? Robot.ArmJointCount : 7;
+
         void Update()
         {
             if (Robot == null) return;
@@ -37,7 +39,8 @@ namespace LIBERO.Core
 
             if (_jointMode)
             {
-                for (int i = 0; i <= 6; i++)
+                int maxJoints = ArmJoints;
+                for (int i = 0; i < maxJoints; i++)
                 {
                     if (Input.GetKeyDown((KeyCode)((int)KeyCode.Alpha1 + i)))
                     {
@@ -51,18 +54,21 @@ namespace LIBERO.Core
                 if (Input.GetKey(KeyCode.W)) dir = 1;
                 else if (Input.GetKey(KeyCode.S)) dir = -1;
 
-                if (dir != 0)
+                if (dir != 0 && Robot.Joints != null)
                 {
-                    float[] targets = new float[7];
-                    for (int i = 0; i < Mathf.Min(Robot.Joints.Length, 7); i++)
+                    int count = Robot.Joints.Length;
+                    float[] targets = new float[count];
+                    for (int i = 0; i < count; i++)
                         targets[i] = Robot.Joints[i].xDrive.target;
-                    targets[_selectedJoint] += dir * step;
+                    if (_selectedJoint < count)
+                        targets[_selectedJoint] += dir * step;
                     Robot.SetJointPositions(targets);
                 }
             }
             else
             {
-                float[] action = new float[7];
+                int total = ArmJoints + 1;
+                float[] action = new float[total];
 
                 float posStep = MoveSpeed * dt / 0.02f * 0.5f;
                 float rotStep = RotSpeed * dt / 0.3f * 0.5f;
@@ -81,10 +87,10 @@ namespace LIBERO.Core
                 if (Input.GetKey(KeyCode.C)) action[5] = -rotStep;
                 if (Input.GetKey(KeyCode.V)) action[5] =  rotStep;
 
-                action[6] = _gripper;
+                action[total - 1] = _gripper;
 
                 bool hasInput = false;
-                for (int i = 0; i < 7; i++) { if (action[i] != 0) hasInput = true; }
+                for (int i = 0; i < total; i++) { if (action[i] != 0) hasInput = true; }
 
                 if (hasInput)
                     Robot.ApplyAction(action);

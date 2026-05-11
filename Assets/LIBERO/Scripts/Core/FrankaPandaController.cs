@@ -5,14 +5,20 @@ namespace LIBERO.Core
     public class FrankaPandaController : MonoBehaviour
     {
         [Header("Joint References")]
-        public ArticulationBody[] Joints; // 7 joints for Franka Panda
+        public ArticulationBody[] Joints;
+
+        [Header("Arm Config")]
+        public int ArmJointCount = 7;
 
         [Header("EEF Reference")]
         public Transform EEFTransform;
 
-        [Header("Gripper")]
+        [Header("Gripper (Dual-Finger)")]
         public ArticulationBody LeftFinger;
         public ArticulationBody RightFinger;
+
+        [Header("Gripper (Single-Jaw / Revolute)")]
+        public ArticulationBody GripperJoint;
 
         [Header("Control")]
         public float PositionScale = 0.05f;
@@ -25,6 +31,9 @@ namespace LIBERO.Core
         public float IKPosScale = 0.02f;
         public float IKRotScale = 0.3f;
 
+        [Header("Home Pose")]
+        public float[] HomePoseDegrees;
+
         private bool _initialized;
         private ArticulationBody _rootAB;
 
@@ -35,24 +44,20 @@ namespace LIBERO.Core
 
         public void InitializeJoints()
         {
-            if (Joints == null || Joints.Length != 7)
+            if (Joints == null || Joints.Length == 0)
             {
-                Debug.LogWarning($"Expected 7 joints, found {Joints?.Length ?? 0}. Attempting auto-discovery.");
+                Debug.LogWarning("No joints assigned. Attempting auto-discovery.");
                 Joints = GetComponentsInChildren<ArticulationBody>();
-                if (Joints.Length > 7)
-                {
-                    var filtered = new ArticulationBody[7];
-                    for (int i = 0; i < 7; i++) filtered[i] = Joints[i];
-                    Joints = filtered;
-                }
             }
 
             if (Joints != null && Joints.Length > 0)
                 _rootAB = RootAB ?? GetComponent<ArticulationBody>();
 
             _initialized = true;
-            Debug.Log($"FrankaPandaController initialized, rootAB={_rootAB != null}");
+            Debug.Log($"FrankaPandaController initialized, joints={Joints?.Length ?? 0}, armJoints={ArmJointCount}, rootAB={_rootAB != null}");
         }
+
+        public int TotalJointCount => Joints?.Length ?? 0;
 
         public void ApplyAction(float[] action)
         {
@@ -79,21 +84,23 @@ namespace LIBERO.Core
             else if (!UseIK)
             {
                 GetJointPositions(out float[] currentJoints);
-                for (int i = 0; i < Mathf.Min(currentJoints.Length, action.Length); i++)
+                int limit = Mathf.Min(currentJoints.Length, action.Length, ArmJointCount);
+                for (int i = 0; i < limit; i++)
                     currentJoints[i] += action[i];
                 SetJointPositions(currentJoints);
             }
 
-            if (action.Length >= 7)
-                SetGripper(action[6]);
+            if (action.Length > ArmJointCount)
+                SetGripper(action[ArmJointCount]);
         }
 
         public void GetJointPositions(out float[] positions)
         {
-            positions = new float[7];
+            int count = ArmJointCount;
+            positions = new float[count];
             if (Joints != null)
             {
-                for (int i = 0; i < Mathf.Min(Joints.Length, 7); i++)
+                for (int i = 0; i < Mathf.Min(Joints.Length, count); i++)
                     positions[i] = Joints[i].jointPosition[0];
             }
         }
@@ -101,7 +108,8 @@ namespace LIBERO.Core
         public void SetJointPositions(float[] positions)
         {
             if (Joints == null) return;
-            for (int i = 0; i < Mathf.Min(Joints.Length, positions.Length); i++)
+            int limit = Mathf.Min(Joints.Length, positions.Length, ArmJointCount);
+            for (int i = 0; i < limit; i++)
             {
                 var drive = Joints[i].xDrive;
                 drive.target = positions[i];
@@ -125,32 +133,56 @@ namespace LIBERO.Core
 
         public void GetGripperState(out float[] qpos)
         {
-            qpos = new float[2];
-            if (LeftFinger != null) qpos[0] = LeftFinger.jointPosition[0];
-            if (RightFinger != null) qpos[1] = RightFinger.jointPosition[0];
+            if (GripperJoint != null)
+            {
+                qpos = new float[1];
+                qpos[0] = GripperJoint.jointPosition[0];
+            }
+            else
+            {
+                qpos = new float[2];
+                if (LeftFinger != null) qpos[0] = LeftFinger.jointPosition[0];
+                if (RightFinger != null) qpos[1] = RightFinger.jointPosition[0];
+            }
         }
 
         public void SetGripper(float target)
         {
-            if (LeftFinger != null)
+            if (GripperJoint != null)
             {
-                var drive = LeftFinger.xDrive;
+                var drive = GripperJoint.xDrive;
                 drive.target = target * GripperScale;
-                LeftFinger.xDrive = drive;
+                GripperJoint.xDrive = drive;
             }
-            if (RightFinger != null)
+            else
             {
-                var drive = RightFinger.xDrive;
-                drive.target = target * GripperScale;
-                RightFinger.xDrive = drive;
+                if (LeftFinger != null)
+                {
+                    var drive = LeftFinger.xDrive;
+                    drive.target = target * GripperScale;
+                    LeftFinger.xDrive = drive;
+                }
+                if (RightFinger != null)
+                {
+                    var drive = RightFinger.xDrive;
+                    drive.target = target * GripperScale;
+                    RightFinger.xDrive = drive;
+                }
             }
         }
 
         public void ResetToHomePose()
         {
-            SetJointPositions(new float[] { 
-                0, -45f, 0, -135f, 0, 90f, 45f 
-            });
+            float[] homePose;
+            if (HomePoseDegrees != null && HomePoseDegrees.Length >= ArmJointCount)
+            {
+                homePose = HomePoseDegrees;
+            }
+            else
+            {
+                homePose = new float[] { 0, -45f, 0, -135f, 0, 90f, 45f };
+            }
+            SetJointPositions(homePose);
             SetGripper(0.04f);
             Debug.Log("[FPC] Home pose set (degrees)");
         }
@@ -161,7 +193,7 @@ namespace LIBERO.Core
             GetEEFPose(out Vector3 eefPos, out Quaternion eefQuat);
             GetGripperState(out float[] gripper);
 
-            return new Vector3(eefPos.x, eefPos.y, eefPos.z); // simplified
+            return new Vector3(eefPos.x, eefPos.y, eefPos.z);
         }
     }
 }

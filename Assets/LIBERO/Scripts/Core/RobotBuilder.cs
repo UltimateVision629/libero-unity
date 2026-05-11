@@ -12,6 +12,7 @@ namespace LIBERO.Core
         public Transform EEFTransform;
         public ArticulationBody LeftFinger;
         public ArticulationBody RightFinger;
+        public ArticulationBody GripperJoint;
         public Transform GripSite;
     }
 

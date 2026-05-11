@@ -90,7 +90,7 @@ namespace LIBERO.Tests
             env.ObsCollector = obsCollector;
             env.Initialize(tempFile);
 
-            var obs = env.Reset();
+            var obs = env.ResetEnvironment();
 
             Assert.IsNotNull(obs.JointPositions);
             Assert.AreEqual(7, obs.JointPositions.Length);
@@ -126,7 +126,7 @@ namespace LIBERO.Tests
 
             env.ObsCollector = obsCollector;
             env.Initialize(tempFile);
-            env.Reset();
+            env.ResetEnvironment();
 
             Observation obs;
             float reward;

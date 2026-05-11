@@ -13,6 +13,12 @@ namespace LIBERO.Core
         Study
     }
 
+    public enum RobotType
+    {
+        Panda,
+        SO100
+    }
+
     public class SceneBuilder
     {
         private struct PlacedInfo
