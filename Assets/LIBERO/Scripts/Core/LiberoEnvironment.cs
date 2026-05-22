@@ -14,6 +14,7 @@ namespace LIBERO.Core
         public GameObject ArenaRoot;
         public GameObject ObjectParent;
         public FrankaPandaController Robot;
+        public FrankaPandaController Robot2;
         public ObservationCollector ObsCollector;
 
         [Header("Robot")]
@@ -266,6 +267,12 @@ namespace LIBERO.Core
 
         private void BuildSO100Robot()
         {
+            Robot = BuildSingleSO100(-0.2f, "SO100_L", true);
+            Robot2 = BuildSingleSO100(0.2f, "SO100_R", false);
+        }
+
+        private FrankaPandaController BuildSingleSO100(float xPosition, string robotName, bool addKeyboard)
+        {
             GameObject so100 = null;
             ArticulationBody[] joints = null;
             Transform eef = null;
@@ -275,7 +282,7 @@ namespace LIBERO.Core
             if (prefab != null)
             {
                 so100 = Object.Instantiate(prefab);
-                so100.name = "SO100";
+                so100.name = robotName;
 
                 SafeDestroy(so100.GetComponent<Unity.Robotics.UrdfImporter.Control.Controller>());
                 SafeDestroy(so100.GetComponent<Unity.Robotics.UrdfImporter.Control.FKRobot>());
@@ -336,7 +343,7 @@ namespace LIBERO.Core
                 if (!System.IO.File.Exists(urdfPath))
                 {
                     Debug.LogError($"[LiberoEnvironment] SO100 URDF not found: {urdfPath}");
-                    return;
+                    return null;
                 }
 
                 var config = new RobotBuildConfig
@@ -349,11 +356,11 @@ namespace LIBERO.Core
                 if (result.Root == null)
                 {
                     Debug.LogError("[LiberoEnvironment] SO100 URDF build failed");
-                    return;
+                    return null;
                 }
 
                 so100 = result.Root;
-                so100.name = "SO100";
+                so100.name = robotName;
 
                 var armJointsList = new List<ArticulationBody>();
                 gripperJoint = result.GripperJoint;
@@ -387,34 +394,50 @@ namespace LIBERO.Core
                 gripperJoint.xDrive = gDrive;
             }
 
+            so100.transform.rotation = Quaternion.Euler(0, -90, 0);
             so100.transform.SetParent(ArenaRoot.transform);
-            so100.transform.localPosition = GetRobotBasePosition();
+            so100.transform.localPosition = new Vector3(xPosition, 0, GetRobotBasePosition().z);
+            string basePath = AssetDatabase.GetAssetPath("robots/so100/base.obj");
 
-            if (Robot == null)
-                Robot = so100.AddComponent<FrankaPandaController>();
-
-            Robot.ArmJointCount = 5;
-            Robot.RootAB = FindRootArticulationBody(so100);
-            Robot.Joints = joints;
-            Robot.EEFTransform = eef;
-            Robot.GripperJoint = gripperJoint;
-            Robot.HomePoseDegrees = new float[] { 0f, 30f, -60f, 0f, 0f };
-            Robot.InitializeJoints();
-            Robot.ResetToHomePose();
-
-            Physics.SyncTransforms();
-            var rootAb2 = FindRootArticulationBody(so100);
-            if (rootAb2 != null)
-                rootAb2.TeleportRoot(so100.transform.position, so100.transform.rotation);
-
-            if (so100.GetComponent<KeyboardController>() == null)
+            string SO100_basePath = AssetDatabase.GetAssetPath("robots/so100/base.obj");
+            if (System.IO.File.Exists(SO100_basePath))
             {
-                var kbd = so100.AddComponent<KeyboardController>();
-                kbd.Robot = Robot;
+                Mesh baseMesh = MeshFileParser.Load(SO100_basePath, Vector3.one);
+                var baseGo = new GameObject("base_pedestal");
+                baseGo.transform.SetParent(so100.transform, false);
+                // 调整位置使底座贴地、支撑机械臂
+                baseGo.transform.localPosition = new Vector3(0, -0.875f, 0);
+                baseGo.transform.localScale = Vector3.one;
+                baseGo.AddComponent<MeshFilter>().sharedMesh = baseMesh;
+                baseGo.AddComponent<MeshRenderer>().material = 
+                    new Material(Shader.Find("Standard")) { color = Color.gray };
             }
 
-            Debug.Log($"[LiberoEnvironment] SO100 built at {so100.transform.localPosition}, "
+            var controller = so100.AddComponent<FrankaPandaController>();
+            controller.ArmJointCount = 5;
+            controller.RootAB = FindRootArticulationBody(so100);
+            controller.Joints = joints;
+            controller.EEFTransform = eef;
+            controller.GripperJoint = gripperJoint;
+            controller.HomePoseDegrees = new float[] { 0f, 30f, -60f, 0f, 0f };
+            controller.InitializeJoints();
+            controller.ResetToHomePose();
+
+            Physics.SyncTransforms();
+            var rootAb = FindRootArticulationBody(so100);
+            if (rootAb != null)
+                rootAb.TeleportRoot(so100.transform.position, so100.transform.rotation);
+
+            if (addKeyboard && so100.GetComponent<KeyboardController>() == null)
+            {
+                var kbd = so100.AddComponent<KeyboardController>();
+                kbd.Robot = controller;
+            }
+
+            Debug.Log($"[LiberoEnvironment] SO100 '{robotName}' built at {so100.transform.localPosition}, "
                 + $"joints={joints?.Length}, eef={eef != null}, gripper={gripperJoint != null}");
+
+            return controller;
         }
 
         private static ArticulationBody FindRootArticulationBody(GameObject go)
@@ -463,6 +486,8 @@ namespace LIBERO.Core
 
             if (Robot != null)
                 Robot.ResetToHomePose();
+            if (Robot2 != null)
+                Robot2.ResetToHomePose();
 
             StartCoroutine(WaitForPhysicsSettle());
 
