@@ -4,7 +4,7 @@ namespace LIBERO.Core
 {
     public class KeyboardController : MonoBehaviour
     {
-        public FrankaPandaController Robot;
+        public RobotArmController Robot;
         public float MoveSpeed = 2.0f;
         public float RotSpeed = 2.0f;
         public float JointSpeed = 30f;

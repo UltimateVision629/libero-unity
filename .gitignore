@@ -39,3 +39,8 @@ ReportAssets/
 
 # NuGet
 packages/
+
+# Agent
+AGENTS.md
+opencode.json
+history/

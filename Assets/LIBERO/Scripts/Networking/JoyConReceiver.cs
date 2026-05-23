@@ -1,0 +1,224 @@
+using System;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using UnityEngine;
+
+namespace LIBERO.Networking
+{
+    [Serializable]
+    public struct JoyConPose
+    {
+        public float[] pos;   // [x, y, z] metres in Joy-Con frame
+        public float[] rot;   // [roll, pitch, yaw] radians
+        public float gripper;
+        public int button;
+    }
+
+    public class JoyConReceiver : MonoBehaviour
+    {
+        [Header("TCP Settings")]
+        public int ListenPort = 5555;
+        public bool AutoStart = true;
+
+        [Header("Status")]
+        public bool IsConnected;
+
+        private TcpListener _listener;
+        private TcpClient _client;
+        private Thread _recvThread;
+        private readonly ConcurrentQueue<byte[]> _msgQueue = new ConcurrentQueue<byte[]>();
+        private volatile bool _running;
+
+        private JoyConPose _robot0Pose;
+        private JoyConPose _robot1Pose;
+        private readonly object _poseLock = new object();
+
+        public bool HasData { get; private set; }
+
+        void Start()
+        {
+            if (AutoStart)
+                StartServer();
+        }
+
+        public void StartServer()
+        {
+            if (_running) return;
+
+            _running = true;
+            _recvThread = new Thread(ServerLoop)
+            {
+                IsBackground = true,
+                Name = "JoyConReceiver"
+            };
+            _recvThread.Start();
+        }
+
+        private void ServerLoop()
+        {
+            try
+            {
+                _listener = new TcpListener(IPAddress.Loopback, ListenPort);
+                _listener.Start();
+                Debug.Log($"[JoyConReceiver] Listening on 127.0.0.1:{ListenPort}");
+
+                while (_running)
+                {
+                    if (_client == null || !_client.Connected)
+                    {
+                        try
+                        {
+                            _client = _listener.AcceptTcpClient();
+                            _client.NoDelay = true; // disable Nagle for low latency
+                            IsConnected = true;
+                            Debug.Log("[JoyConReceiver] Python bridge connected.");
+                        }
+                        catch (SocketException)
+                        {
+                            if (!_running) break;
+                            Thread.Sleep(500);
+                            continue;
+                        }
+                    }
+
+                    try
+                    {
+                        using (var stream = _client.GetStream())
+                        using (var reader = new StreamReader(stream, Encoding.UTF8))
+                        {
+                            while (_running && _client.Connected)
+                            {
+                                string line = reader.ReadLine();
+                                if (line == null) break; // connection closed
+                                _msgQueue.Enqueue(Encoding.UTF8.GetBytes(line));
+                            }
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        Debug.LogWarning("[JoyConReceiver] Python bridge disconnected. Waiting for reconnect...");
+                    }
+
+                    CleanupClient();
+                    IsConnected = false;
+                    HasData = false;
+                }
+            }
+            catch (SocketException ex)
+            {
+                Debug.LogError($"[JoyConReceiver] Socket error: {ex.Message}");
+            }
+            finally
+            {
+                CleanupClient();
+                _listener?.Stop();
+            }
+        }
+
+        private void CleanupClient()
+        {
+            try { _client?.Close(); } catch { }
+            _client = null;
+        }
+
+        void Update()
+        {
+            // Process incoming messages on main thread
+            while (_msgQueue.TryDequeue(out byte[] raw))
+            {
+                try
+                {
+                    string json = Encoding.UTF8.GetString(raw);
+                    ProcessMessage(json);
+                    HasData = true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[JoyConReceiver] Failed to parse message: {ex.Message}");
+                }
+            }
+        }
+
+        private void ProcessMessage(string json)
+        {
+            // Simple manual JSON parse to avoid Newtonsoft dependency
+            lock (_poseLock)
+            {
+                int idx = json.IndexOf("\"robot_0\"");
+                if (idx >= 0)
+                    _robot0Pose = ParseRobotData(json, idx);
+
+                idx = json.IndexOf("\"robot_1\"");
+                if (idx >= 0)
+                    _robot1Pose = ParseRobotData(json, idx);
+            }
+        }
+
+        private JoyConPose ParseRobotData(string json, int startIdx)
+        {
+            var pose = new JoyConPose();
+            int p;
+
+            p = json.IndexOf("\"pos\"", startIdx);
+            if (p >= 0) pose.pos = ParseFloatArray(json, p);
+
+            p = json.IndexOf("\"rot\"", startIdx);
+            if (p >= 0) pose.rot = ParseFloatArray(json, p);
+
+            p = json.IndexOf("\"gripper\"", startIdx);
+            if (p >= 0) pose.gripper = ParseFloatValue(json, p);
+
+            p = json.IndexOf("\"button\"", startIdx);
+            if (p >= 0) pose.button = (int)ParseFloatValue(json, p);
+
+            return pose;
+        }
+
+        private float[] ParseFloatArray(string json, int startIdx)
+        {
+            int bracket = json.IndexOf('[', startIdx);
+            int end = json.IndexOf(']', bracket);
+            if (bracket < 0 || end < 0) return new float[3];
+
+            string inner = json.Substring(bracket + 1, end - bracket - 1);
+            string[] parts = inner.Split(',');
+            float[] result = new float[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+                float.TryParse(parts[i].Trim(), out result[i]);
+            return result;
+        }
+
+        private float ParseFloatValue(string json, int startIdx)
+        {
+            int colon = json.IndexOf(':', startIdx);
+            if (colon < 0) return 0f;
+
+            int end = json.IndexOfAny(new[] { ',', '}' }, colon);
+            if (end < 0) end = json.Length;
+
+            string val = json.Substring(colon + 1, end - colon - 1).Trim();
+            float.TryParse(val, out float result);
+            return result;
+        }
+
+        public JoyConPose GetRobotPose(int robotIndex)
+        {
+            lock (_poseLock)
+            {
+                return robotIndex == 0 ? _robot0Pose : _robot1Pose;
+            }
+        }
+
+        void OnDestroy()
+        {
+            _running = false;
+            CleanupClient();
+            _listener?.Stop();
+            _recvThread?.Join(2000);
+        }
+    }
+}

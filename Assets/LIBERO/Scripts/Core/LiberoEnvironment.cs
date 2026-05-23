@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using LIBERO.Networking;
 using UnityEngine;
 
 namespace LIBERO.Core
@@ -13,9 +14,19 @@ namespace LIBERO.Core
         [Header("Scene References")]
         public GameObject ArenaRoot;
         public GameObject ObjectParent;
-        public FrankaPandaController Robot;
-        public FrankaPandaController Robot2;
+        public RobotArmController Robot;
+        public RobotArmController Robot2;
         public ObservationCollector ObsCollector;
+
+        [Header("Joy-Con Control")]
+        public bool UseJoyCon;
+        public JoyConReceiver JoyConInput;
+        public float JoyConPosScale = 1.0f;
+        public float JoyConRotScale = 0.5f;
+
+        private Vector3 _jcHomePos0, _jcHomePos1;
+        private Quaternion _jcHomeRot0, _jcHomeRot1;
+        private bool _jcCalibrated0, _jcCalibrated1;
 
         [Header("Robot")]
         public RobotType RobotTypeValue = RobotType.Panda;
@@ -31,6 +42,8 @@ namespace LIBERO.Core
         private SceneBuilder _sceneBuilder;
         private bool _isInitialized;
         private int _stepCount;
+        // --- 新增：物理引擎热身帧计数器 ---
+        private int _warmupFrames = 0;
 
         public BDDL.BDDLProblem Problem => _problem;
         public SceneBuilder Scene => _sceneBuilder;
@@ -61,10 +74,21 @@ namespace LIBERO.Core
             ObjectParent = null;
             _sceneBuilder = null;
             _isInitialized = false;
+            _warmupFrames = 0;
         }
 
         private void Start()
         {
+            // Auto-create JoyConReceiver if not assigned in scene
+            if (JoyConInput == null)
+            {
+                var jcGo = new GameObject("JoyConReceiver");
+                jcGo.transform.SetParent(transform);
+                JoyConInput = jcGo.AddComponent<JoyConReceiver>();
+                UseJoyCon = true;
+                Debug.Log("[LiberoEnvironment] Auto-created JoyConReceiver (TCP port 5555)");
+            }
+
             if (!string.IsNullOrEmpty(BDDLFilePath))
                 InitializeScene();
         }
@@ -267,11 +291,11 @@ namespace LIBERO.Core
 
         private void BuildSO100Robot()
         {
-            Robot = BuildSingleSO100(-0.2f, "SO100_L", true);
+            Robot = BuildSingleSO100(-0.2f, "SO100_L", false);
             Robot2 = BuildSingleSO100(0.2f, "SO100_R", false);
         }
 
-        private FrankaPandaController BuildSingleSO100(float xPosition, string robotName, bool addKeyboard)
+        private RobotArmController BuildSingleSO100(float xPosition, string robotName, bool addKeyboard)
         {
             GameObject so100 = null;
             ArticulationBody[] joints = null;
@@ -413,7 +437,7 @@ namespace LIBERO.Core
                     new Material(Shader.Find("Standard")) { color = Color.gray };
             }
 
-            var controller = so100.AddComponent<FrankaPandaController>();
+            var controller = so100.AddComponent<SO100Controller>();
             controller.ArmJointCount = 5;
             controller.RootAB = FindRootArticulationBody(so100);
             controller.Joints = joints;
@@ -592,6 +616,99 @@ namespace LIBERO.Core
         public string GetLanguageInstruction()
         {
             return _problem?.LanguageInstruction ?? "";
+        }
+
+        private void Update()
+        {
+            if (UseJoyCon && JoyConInput != null && JoyConInput.HasData)
+            {
+                // 热身延迟：等待 60 帧确保机械臂完全抬升到 HomePose
+                if (_warmupFrames < 5)
+                {
+                    _warmupFrames++;
+                    return;
+                }
+
+                // Disable keyboard control to avoid conflicting with JoyCon
+                DisableKeyboardControllers();
+                ProcessJoyConInput();
+            }
+        }
+
+        private void ProcessJoyConInput()
+        {
+            if (Robot != null)
+                ApplyJoyConToRobot(0, Robot);
+            if (Robot2 != null)
+                ApplyJoyConToRobot(1, Robot2);
+        }
+
+        private void DisableKeyboardControllers()
+        {
+            var kbds = FindObjectsOfType<KeyboardController>();
+            foreach (var kbd in kbds)
+            {
+                if (kbd.enabled)
+                {
+                    kbd.enabled = false;
+                    Debug.Log("[LiberoEnvironment] KeyboardController disabled (JoyCon active)");
+                }
+            }
+        }
+
+        private void ApplyJoyConToRobot(int robotIndex, RobotArmController controller)
+        {
+            JoyConPose jc = JoyConInput.GetRobotPose(robotIndex);
+            if (jc.pos == null || jc.pos.Length < 3 || jc.rot == null || jc.rot.Length < 3)
+                return;
+            if (controller.EEFTransform == null)
+                return;
+
+            // Python bridge sends pos delta (metres) + raw absolute rot (radians).
+            // rot = [roll, pitch, yaw] in Joy-Con frame:
+            //   X+ = forward   Y+ = right   Z+ = up
+            // Unity frame:    X+ = right     Y+ = up      Z+ = forward
+            float jx = jc.pos[0], jy = jc.pos[1], jz = jc.pos[2];
+            float jr = jc.rot[0], jp = jc.rot[1], jw = jc.rot[2];
+
+            Vector3 unityDelta = new Vector3(jy, jz, jx) * JoyConPosScale;
+
+            // Absolute Joy-Con orientation → Unity rotation
+            // Joy-Con roll (X-axis) → Unity Z, pitch (Y-axis) → Unity X, yaw (Z-axis) → Unity Y
+            Quaternion rawJoyConRot = Quaternion.Euler(
+                -jp * Mathf.Rad2Deg, jw * Mathf.Rad2Deg, jr * Mathf.Rad2Deg);
+            Quaternion joyConRot = Quaternion.Slerp(Quaternion.identity, rawJoyConRot, JoyConRotScale);
+
+            if (robotIndex == 0)
+            {
+                if (!_jcCalibrated0)
+                {
+                    _jcHomePos0 = controller.EEFTransform.position;
+                    _jcHomeRot0 = controller.EEFTransform.rotation;
+                    _jcCalibrated0 = true;
+                }
+
+                Vector3 targetPos = _jcHomePos0 + unityDelta;
+                Quaternion targetRot = joyConRot * _jcHomeRot0;
+
+                controller.ApplyJoyConPose(targetPos, targetRot);
+                controller.SetGripper(jc.gripper);
+            }
+            else
+            {
+                if (!_jcCalibrated1)
+                {
+                    _jcHomePos1 = controller.EEFTransform.position;
+                    _jcHomeRot1 = controller.EEFTransform.rotation;
+                    _jcCalibrated1 = true;
+                }
+
+                Vector3 targetPos = _jcHomePos1 + unityDelta;
+                Quaternion targetRot = joyConRot * _jcHomeRot1;
+
+                controller.ApplyJoyConPose(targetPos, targetRot);
+                controller.SetGripper(jc.gripper);
+            }
         }
 
         private void OnDestroy()

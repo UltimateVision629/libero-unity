@@ -71,7 +71,7 @@ namespace LIBERO.Core
             _eyeInHandTex = new Texture2D(ImageWidth, ImageHeight, TextureFormat.RGB24, false);
         }
 
-        public Observation Collect(Dictionary<string, ObjectState> objectStates, FrankaPandaController robot)
+        public Observation Collect(Dictionary<string, ObjectState> objectStates, RobotArmController robot)
         {
             var obs = new Observation
             {
