@@ -12,8 +12,10 @@ namespace LIBERO.Networking
     [Serializable]
     public struct JoyConPose
     {
-        public float[] pos;   // [x, y, z] metres in Joy-Con frame
-        public float[] rot;   // [roll, pitch, yaw] radians
+        public float[] pos;      // [x, y, z] metres in Joy-Con frame (used in Unity position IK)
+        public float[] rot;      // [roll, pitch, yaw] radians (legacy, not used)
+        public float[] joints;   // [yaw, J2, J3, J4, J5] radians (legacy, not used)
+        public float baseYaw;    // base rotation J0 target (rad, ±90°), from stick H
         public float gripper;
         public int button;
     }
@@ -169,8 +171,14 @@ namespace LIBERO.Networking
             p = json.IndexOf("\"rot\"", startIdx);
             if (p >= 0) pose.rot = ParseFloatArray(json, p);
 
+            p = json.IndexOf("\"base_yaw\"", startIdx);
+            if (p >= 0) pose.baseYaw = ParseFloatValue(json, p);
+
             p = json.IndexOf("\"gripper\"", startIdx);
             if (p >= 0) pose.gripper = ParseFloatValue(json, p);
+
+            p = json.IndexOf("\"joints\"", startIdx);
+            if (p >= 0) pose.joints = ParseFloatArray(json, p);
 
             p = json.IndexOf("\"button\"", startIdx);
             if (p >= 0) pose.button = (int)ParseFloatValue(json, p);

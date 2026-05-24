@@ -44,3 +44,5 @@ packages/
 AGENTS.md
 opencode.json
 history/
+
+.vscode
