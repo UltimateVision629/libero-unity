@@ -55,34 +55,15 @@ class JoyConBridge:
         self.conn: Optional[socket.socket] = None
 
         # ── Manual X integrator (bypasses direction_vector dependency) ──
-        # JoyconRobotics uses direction_vector[0]*stick_v*dt for X,
-        # which collapses to 0 when cos(yaw)≈0 (gyro drift).  We keep our
-        # own independent X accumulator driven directly by stick deflection.
         self._x_manual_l: float = _SO100_HOME_XYZ[0]
         self._x_manual_r: float = _SO100_HOME_XYZ[0]
 
-        # ── Base yaw (stick horizontal → base rotation J0) ────────────
+        # ── Base yaw (from Madgwick, transmitted as-is) ────────────────
         self._base_yaw_l: float = 0.0
         self._base_yaw_r: float = 0.0
-        BASE_YAW_SPEED: float = 1.05  # rad/s full-deflection  (~60°/s)
-        BASE_YAW_LIMIT: float = 1.57  # ±90°
 
         # ── Diagnostics ─────────────────────────────────────────────────
-        self._diag_window: deque = deque(maxlen=30)
         self._diag_count: int = 0
-
-        # ── State for Y/Z limits ───────────────────────────────────────
-        self._y_manual_l: float = _SO100_HOME_XYZ[1]
-        self._y_manual_r: float = _SO100_HOME_XYZ[1]
-        self._z_manual_l: float = _SO100_HOME_XYZ[2]
-        self._z_manual_r: float = _SO100_HOME_XYZ[2]
-        SPEED_YZ: float = 0.42  # m/s full-deflection
-
-        # ── Accel-based roll/pitch (bypass Madgwick yaw drift/flip) ────
-        self._roll_l: float = 0.0
-        self._pitch_l: float = 0.0
-        self._roll_r: float = 0.0
-        self._pitch_r: float = 0.0
 
     def init_controllers(self):
         """Connect to both Joy-Con controllers."""
@@ -206,64 +187,45 @@ class JoyConBridge:
                 # NOTE: horizontal stick sign inverted for intuitive control
                 # (stick right → robot turns left, and vice versa)
                 stick_v_l = self._get_stick_vertical(self.jc_left)
-                stick_h_l = -self._get_stick_horizontal(self.jc_left)
                 stick_v_r = self._get_stick_vertical(self.jc_right)
-                stick_h_r = -self._get_stick_horizontal(self.jc_right)
 
                 SPEED_X = 0.30
-                SPEED_YZ = 0.42
-                BASE_YAW_SPEED = 1.05
-                BASE_YAW_LIMIT = 1.57
 
                 # X position (stick V → X forward)
                 self._x_manual_l += stick_v_l * SPEED_X * dt
                 self._x_manual_r += stick_v_r * SPEED_X * dt
                 # Y is fixed at home (0.0) – lateral motion handled by base rotation
-                self._y_manual_l = _SO100_HOME_XYZ[1]
-                self._y_manual_r = _SO100_HOME_XYZ[1]
-
-                # Base yaw integration (stick H → J0 rotation)
-                self._base_yaw_l += stick_h_l * BASE_YAW_SPEED * dt
-                self._base_yaw_r += stick_h_r * BASE_YAW_SPEED * dt
-                self._base_yaw_l = max(-BASE_YAW_LIMIT, min(BASE_YAW_LIMIT, self._base_yaw_l))
-                self._base_yaw_r = max(-BASE_YAW_LIMIT, min(BASE_YAW_LIMIT, self._base_yaw_r))
+                y_l = _SO100_HOME_XYZ[1]
+                y_r = _SO100_HOME_XYZ[1]
 
                 # Z from joyconrobotics pose[2] (uses trigger + stick-press internally)
-                self._z_manual_l = pose_l[2]
-                self._z_manual_r = pose_r[2]
+                z_l = pose_l[2]
+                z_r = pose_r[2]
 
                 # ── Build EEF position ──
-                eef_pos_l = [self._x_manual_l, self._y_manual_l, self._z_manual_l]
-                eef_pos_r = [self._x_manual_r, self._y_manual_r, self._z_manual_r]
+                eef_pos_l = [self._x_manual_l, y_l, z_l]
+                eef_pos_r = [self._x_manual_r, y_r, z_r]
 
-                # ── Accel-based roll/pitch (bypass Madgwick yaw drift/flip) ──
-                # Reading Joy-Con accel (in g units): accel_in_g[0] = (ax, ay, az)
-                # Joy-Con right-handed: X=right, Y=forward, Z=up
-                acc_l = self.jc_left.gyro.accel_in_g[0]   # tuple(ax, ay, az)
-                acc_r = self.jc_right.gyro.accel_in_g[0]  # tuple(ax, ay, az)
-                ax_l, ay_l, az_l = acc_l
-                ax_r, ay_r, az_r = acc_r
+                # ── Use JoyconRobotics Madgwick roll/pitch (matching lerobot_joycon_gpos.py) ──
+                # pose[3]=roll, pose[4]=pitch, pose[5]=yaw  (rad, Joy-Con frame)
+                roll_l = pose_l[3]
+                pitch_l = pose_l[4]
+                roll_r = pose_r[3]
+                pitch_r = pose_r[4]
 
-                # Compute roll & pitch from gravity vector (low-pass filtered)
-                ALPHA = 0.35  # complementary filter blend (accel weight)
-                roll_acc_l  = math.atan2(ay_l, az_l)
-                pitch_acc_l = math.atan2(-ax_l, math.sqrt(ay_l*ay_l + az_l*az_l))
-                roll_acc_r  = math.atan2(ay_r, az_r)
-                pitch_acc_r = math.atan2(-ax_r, math.sqrt(ay_r*ay_r + az_r*az_r))
+                # Apply SO100-specific transformations (matching lerobot_joycon_gpos.py L79-80)
+                pitch_l = -pitch_l
+                pitch_r = -pitch_r
+                roll_l = roll_l - math.pi / 2
+                roll_r = roll_r - math.pi / 2
 
-                # Gyro integration (roll = around X axis, pitch = around Y axis)
-                gyro_l = self.jc_left.gyro.gyro_in_rad[0]   # tuple(gx, gy, gz)
-                gyro_r = self.jc_right.gyro.gyro_in_rad[0]
-                gx_l, gy_l, gz_l = gyro_l
-                gx_r, gy_r, gz_r = gyro_r
-                self._roll_l  = (1.0 - ALPHA) * (self._roll_l  + gx_l * dt) + ALPHA * roll_acc_l
-                self._pitch_l = (1.0 - ALPHA) * (self._pitch_l + gy_l * dt) + ALPHA * pitch_acc_l
-                self._roll_r  = (1.0 - ALPHA) * (self._roll_r  + gx_r * dt) + ALPHA * roll_acc_r
-                self._pitch_r = (1.0 - ALPHA) * (self._pitch_r + gy_r * dt) + ALPHA * pitch_acc_r
+                # Use Madgwick yaw directly as base yaw (matching reference L84,87)
+                self._base_yaw_l = pose_l[5]
+                self._base_yaw_r = pose_r[5]
 
-                # EEF orientation: accel roll/pitch + Madgwick yaw (still from pose[5])
-                eef_rot_l = [self._roll_l, self._pitch_l, pose_l[5]]
-                eef_rot_r = [self._roll_r, self._pitch_r, pose_r[5]]
+                # EEF orientation: roll/pitch only, yaw=0 (J0 handles yaw via base_yaw)
+                eef_rot_l = [float(roll_l), float(pitch_l), 0.0]
+                eef_rot_r = [float(roll_r), float(pitch_r), 0.0]
 
                 # ── Pitch diagnostics ──────────────────────────────
                 self._diag_count += 1

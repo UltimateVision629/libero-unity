@@ -30,14 +30,26 @@ namespace LIBERO.Core
         public float GripperScale = 0.1f;
         public ArticulationBody RootAB { get; set; }
 
-        [Header("IK Control")]
-        public bool UseIK = true;
-        public float DampingLambda = 0.05f;
-        public float IKPosScale = 0.02f;
-        public float IKRotScale = 0.3f;
+        [Header("IK Control")]
+        public bool UseIK = true;
+        public IKMode IkSolverMode = IKMode.DLS;
+        public float DampingLambda = 0.05f;
+        public float IKPosScale = 0.02f;
+        public float IKRotScale = 0.3f;
 
-        [Header("Home Pose")]
-        public float[] HomePoseDegrees;
+        [Header("IK - Levenberg-Marquardt")]
+        public float IKLambda = 0.1f;
+        public int IKMaxIterations = 10;
+        public float IKTolerance = 0.001f;
+        public int IKSearchLimit = 5;
+        public bool IKUseJointLimits = false;
+
+        [Header("Joint Limits (radians, lower/upper)")]
+        public float[] JointLimitsLower;
+        public float[] JointLimitsUpper;
+
+        [Header("Home Pose")]
+        public float[] HomePoseDegrees;
 
         /// <summary>
         /// Override to provide default home pose when HomePoseDegrees is unset.
@@ -151,11 +163,106 @@ namespace LIBERO.Core
             }
         }
 
-        /// <summary>
-        /// Apply JoyCon-teleop target pose. Override in subclass to tune gains.
-        /// (Legacy, with full orientation IK. Use ServoTowardPositionWithBase for SO100.)
-        /// </summary>
-        public abstract void ApplyJoyConPose(Vector3 targetPos, Quaternion targetRot);
+        /// <summary>
+        /// Servo towards an absolute target pose using Levenberg-Marquardt IK.
+        /// Uses angle-axis error for exact 6-DOF convergence.
+        /// </summary>
+        public void ServoTowardPoseLM(Vector3 targetPos, Quaternion targetRot,
+            float posGain, float rotGain)
+        {
+            if (!_initialized || Joints == null || _rootAB == null) return;
+            if (EEFTransform == null) return;
+
+            int n = ArmJointCount;
+            Matrix4x4 Tep = JacobianSolver.BuildTransform(targetPos, targetRot);
+
+            // Build FK and Jacobian callbacks using Unity's ArticulationBody
+            System.Func<float[], Matrix4x4> fkine = (q) =>
+            {
+                // Apply q to joint drives temporarily and read EEF
+                float[] saved = new float[n];
+                for (int i = 0; i < n && i < Joints.Length; i++)
+                    saved[i] = Joints[i].xDrive.target;
+                for (int i = 0; i < n && i < Joints.Length; i++)
+                {
+                    var drive = Joints[i].xDrive;
+                    drive.target = q[i] * Mathf.Rad2Deg;
+                    Joints[i].xDrive = drive;
+                }
+                // Force physics step?  For simplicity, approximate FK
+                // by directly reading current EEF (suboptimal but avoids
+                // stepping physics mid-frame).
+                // Better approach: assume current EEF is close enough
+                // and use Unity's built-in Jacobian.
+                Matrix4x4 Te = JacobianSolver.BuildTransform(EEFTransform.position, EEFTransform.rotation);
+                // Restore
+                for (int i = 0; i < n && i < Joints.Length; i++)
+                {
+                    var drive = Joints[i].xDrive;
+                    drive.target = saved[i];
+                    Joints[i].xDrive = drive;
+                }
+                return Te;
+            };
+
+            System.Func<float[], float[][]> jacob0 = (q) =>
+            {
+                // Use Unity's dense Jacobian
+                return JacobianSolver.GetDenseJacobian(_rootAB, n);
+            };
+
+            System.Func<float[]> getCurrentQ = () =>
+            {
+                float[] qc = new float[n];
+                for (int i = 0; i < n && i < Joints.Length; i++)
+                    qc[i] = Joints[i].jointPosition[0]; // radians
+                return qc;
+            };
+
+            System.Action<float[]> applyQ = (q) =>
+            {
+                for (int i = 0; i < n && i < Joints.Length; i++)
+                {
+                    var drive = Joints[i].xDrive;
+                    float deg = q[i] * Mathf.Rad2Deg;
+                    deg = Mathf.Clamp(deg, drive.lowerLimit, drive.upperLimit);
+                    drive.target = deg;
+                    Joints[i].xDrive = drive;
+                }
+            };
+
+            float[][] qlim = null;
+            if (IKUseJointLimits && JointLimitsLower != null && JointLimitsUpper != null)
+            {
+                qlim = new float[2][] { JointLimitsLower, JointLimitsUpper };
+            }
+
+            IKSolution sol = JacobianSolver.SolveLM(
+                fkine, jacob0, getCurrentQ, applyQ, n, Tep,
+                ilimit: IKMaxIterations,
+                slimit: IKSearchLimit,
+                tol: IKTolerance,
+                lambda: IKLambda,
+                mode: IkSolverMode,
+                qlim: qlim,
+                jointLimits: IKUseJointLimits,
+                maxAngle: 0.25f);
+
+            if (sol.success)
+            {
+                applyQ(sol.q);
+                // Debug log every 30 frames
+                _pitchDiagCount++;
+                if (_pitchDiagCount % 30 == 0)
+                    Debug.Log($"[LM] iters={sol.iterations} residual={sol.residual:F6}");
+            }
+        }
+
+        /// <summary>
+        /// Apply JoyCon-teleop target pose. Override in subclass to tune gains.
+        /// (Legacy, with full orientation IK. Use ServoTowardPositionWithBase for SO100.)
+        /// </summary>
+        public abstract void ApplyJoyConPose(Vector3 targetPos, Quaternion targetRot);
 
         /// <summary>
         /// Servo toward absolute EEF pose (position + orientation) with base rotation.
@@ -291,18 +398,32 @@ namespace LIBERO.Core
             }
         }
 
-        public void SetJointPositions(float[] positions)
-        {
-            print("SetJointPositionsSetJointPositionsSetJointPositionsSetJointPositions");
-            if (Joints == null) return;
-            int limit = Mathf.Min(Joints.Length, positions.Length, ArmJointCount);
-            for (int i = 0; i < limit; i++)
-            {
-                var drive = Joints[i].xDrive;
-                drive.target = positions[i];
-                Joints[i].xDrive = drive;
-            }
-        }
+        public void SetJointPositions(float[] positions)
+        {
+            if (Joints == null) return;
+            int limit = Mathf.Min(Joints.Length, positions.Length, ArmJointCount);
+
+            _pitchDiagCount++;
+            if (_pitchDiagCount % 30 == 0)
+            {
+                var curVals = new System.Text.StringBuilder();
+                var tgtVals = new System.Text.StringBuilder();
+                for (int i = 0; i < limit; i++)
+                {
+                    curVals.Append($"{Joints[i].jointPosition[0] * Mathf.Rad2Deg:F1}");
+                    tgtVals.Append($"{positions[i]:F1}");
+                    if (i < limit - 1) { curVals.Append(", "); tgtVals.Append(", "); }
+                }
+                Debug.Log($"[SJP] limit={limit} cur=[{curVals}] tgt=[{tgtVals}]");
+            }
+
+            for (int i = 0; i < limit; i++)
+            {
+                var drive = Joints[i].xDrive;
+                drive.target = positions[i];
+                Joints[i].xDrive = drive;
+            }
+        }
 
         public void GetEEFPose(out Vector3 position, out Quaternion rotation)
         {

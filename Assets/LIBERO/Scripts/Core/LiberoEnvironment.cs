@@ -31,6 +31,7 @@ namespace LIBERO.Core
 
         [Header("Robot")]
         public RobotType RobotTypeValue = RobotType.Panda;
+        public IKMode IKMode = IKMode.DLS;
 
         [Header("Settings")]
         public int ControlFrequency = 20;
@@ -275,6 +276,9 @@ namespace LIBERO.Core
             Robot.InitializeJoints();
             Robot.ResetToHomePose();
 
+            // Apply IK mode from LiberoEnvironment inspector
+            Robot.IkSolverMode = IKMode;
+
             Physics.SyncTransforms();
             var rootAb2 = FindRootArticulationBody(panda);
             if (rootAb2 != null)
@@ -447,6 +451,9 @@ namespace LIBERO.Core
             controller.HomePoseDegrees = new float[] { 0f, 30f, -60f, 0f, 0f };
             controller.InitializeJoints();
             controller.ResetToHomePose();
+
+            // Apply IK mode from LiberoEnvironment inspector
+            controller.IkSolverMode = IKMode;
 
             Physics.SyncTransforms();
             var rootAb = FindRootArticulationBody(so100);
@@ -667,6 +674,25 @@ namespace LIBERO.Core
         {
             JoyConPose jc = JoyConInput.GetRobotPose(robotIndex);
 
+            // ── Joint-angle direct-drive mode (from joycon_sender.py) ──
+            if (jc.joints != null && jc.joints.Length >= 5)
+            {
+                // joints = [base_yaw, J2, J3, J4, J5, gripper] in radians
+                Debug.Log($"[JoyCon] Robot{robotIndex} joints received (rad): " +
+                    $"[{jc.joints[0]:F3}, {jc.joints[1]:F3}, {jc.joints[2]:F3}, {jc.joints[3]:F3}, {jc.joints[4]:F3}], gripper={jc.gripper:F2}");
+                float[] positionsDeg = new float[Mathf.Min(jc.joints.Length, controller.ArmJointCount)];
+                for (int i = 0; i < positionsDeg.Length; i++)
+                    positionsDeg[i] = jc.joints[i] * Mathf.Rad2Deg;
+                controller.SetJointPositions(positionsDeg);
+                if (jc.joints.Length > controller.ArmJointCount)
+                    controller.SetGripper(jc.joints[controller.ArmJointCount]);
+                // Send current joint angles back to Python for closed-loop IK seeding
+                controller.GetJointPositions(out float[] curJointsRad);
+                JoyConInput?.SetJointFeedback(robotIndex, curJointsRad);
+                return;
+            }
+
+            // ── EEF pose mode (from joycon_bridge.py) ──
             if (jc.pos == null || jc.pos.Length < 3)
                 return;
             if (controller.EEFTransform == null)
@@ -683,24 +709,21 @@ namespace LIBERO.Core
             Vector3 joyConPosUnity = new Vector3(jcY, jcZ, jcX);
 
             // ── EEF orientation from Joy-Con tilt ────────────────
-            // jc.rot = [roll, pitch, yaw] in radians (Joy-Con frame)
+            // jc.rot = [roll, pitch, 0.0] in radians (Joy-Con frame, already transformed by Python)
             // Joy-Con:  roll=Z, pitch=Y, yaw=X  (forward=Z)
             // Unity:    roll=Z, pitch=X, yaw=Y  (forward=Z)
             float jcRoll = jc.rot != null && jc.rot.Length >= 3 ? jc.rot[0] : 0f;
             float jcPitch = jc.rot != null && jc.rot.Length >= 3 ? jc.rot[1] : 0f;
-            float jcYaw = jc.rot != null && jc.rot.Length >= 3 ? jc.rot[2] : 0f;
+            // jc.rot[2] is always 0.0 — yaw handled by base rotation J0
 
-            Debug.Log($"jcRoll {jcRoll* Mathf.Rad2Deg}° jcPitch {jcPitch* Mathf.Rad2Deg}° jcYaw {jcYaw* Mathf.Rad2Deg}°");
-
-            // Joy-Con raw orientation (in Unity axes)
-            // Joy-Con (roll=Z,pitch=Y,yaw=X) → Unity (roll=Z,pitch=X,yaw=Y)
+            // Build Unity rotation: Joy-Con pitch(Y) → Unity pitch(X), Joy-Con roll(Z) → Unity roll(Z)
             Quaternion rawJoyConRot = Quaternion.Euler(
-                jcPitch * Mathf.Rad2Deg,  // Unity X-pitch ← Joy-Con pitch
-                jcYaw * Mathf.Rad2Deg,    // Unity Y-yaw   ← Joy-Con yaw
-                -jcRoll * Mathf.Rad2Deg    // Unity Z-roll  ← Joy-Con roll
+                jcPitch * Mathf.Rad2Deg,  // Unity X-pitch ← Joy-Con Y-pitch
+                0f,                        // Unity Y-yaw = 0 (base yaw drives J0)
+                -jcRoll * Mathf.Rad2Deg    // Unity Z-roll ← Joy-Con Z-roll
             );
 
-            // Base yaw: degrees, driven directly to J0
+            // Base yaw: absolute Madgwick yaw (rad → deg), driven directly to J0
             float baseYawDeg = jc.baseYaw * Mathf.Rad2Deg;
 
             // ── Calibration: capture initial EEF pose on first frame ──
@@ -710,7 +733,6 @@ namespace LIBERO.Core
                 {
                     _jcHomePos0 = controller.EEFTransform.position;
                     _jcHomeRot0 = controller.EEFTransform.rotation;
-
                     _jcHomeJoyConPos0 = joyConPosUnity;
                     _jcHomeBaseYaw0 = baseYawDeg;
                     _jcInitialJoyConRot0 = rawJoyConRot;
@@ -719,32 +741,18 @@ namespace LIBERO.Core
                     return; // skip first frame — wait for valid delta
                 }
 
-                Debug.Log($"[标定] Robot0 初始绝对四元数 (x,y,z,w): {_jcHomeRot0}");
-                Debug.Log($"[标定] Robot0 初始欧拉角 (Pitch, Yaw, Roll): {_jcHomeRot0.eulerAngles}");
-
+                // Position: delta from calibration home, rotated into base-local frame
                 Vector3 deltaPos = joyConPosUnity - _jcHomeJoyConPos0;
                 float currentBaseDeg = baseYawDeg - _jcHomeBaseYaw0;
-                // Rotate delta into base-local frame: stick forward/up follow base facing
                 Vector3 worldDelta = Quaternion.Euler(0, -currentBaseDeg, 0) * deltaPos;
                 Vector3 targetPos = _jcHomePos0 + worldDelta * JoyConPosScale;
 
-                // Joy-Con delta (world-space): handle tilt maps to EEF tilt in world frame
+                // Rotation: Joy-Con tilt delta applied to home EEF rotation
                 Quaternion joyConDelta = rawJoyConRot * Quaternion.Inverse(_jcInitialJoyConRot0);
+                Quaternion targetRot = joyConDelta * _jcHomeRot0;
 
-                Debug.Log($"[调试] 净旋转增量 joyConDelta (Euler): {joyConDelta.eulerAngles}");
-
-                // Apply base yaw so that Joy-Con tilt always aligns with the robot's current facing
-                Quaternion baseRot = Quaternion.Euler(0, currentBaseDeg, 0);
-                Quaternion calibratedTargetRot = baseRot * joyConDelta * _jcHomeRot0;
-                // Slerp smooth to avoid noise / Euler flips
-                Quaternion targetRot = Quaternion.Slerp(
-                    controller.EEFTransform.rotation,
-                    calibratedTargetRot,
-                    Time.deltaTime * JoyConRotSlerpSpeed);
-
+                // Base yaw delta: drive J0 directly
                 float targetBaseDeg = currentBaseDeg;
-
-                Debug.Log($"[调试] 目标旋转欧拉角 targetRot: {targetRot.eulerAngles}");
 
                 controller.ServoTowardPoseWithBase(targetPos, targetRot, targetBaseDeg, 0, 0.35f, 0.2f, 0.25f);
                 controller.SetGripper(jc.gripper);
@@ -765,20 +773,11 @@ namespace LIBERO.Core
 
                 Vector3 deltaPos = joyConPosUnity - _jcHomeJoyConPos1;
                 float currentBaseDeg = baseYawDeg - _jcHomeBaseYaw1;
-                // Rotate delta into base-local frame: stick forward/up follow base facing
                 Vector3 worldDelta = Quaternion.Euler(0, -currentBaseDeg, 0) * deltaPos;
                 Vector3 targetPos = _jcHomePos1 + worldDelta * JoyConPosScale;
 
-                // Joy-Con delta (world-space): handle tilt maps to EEF tilt in world frame
                 Quaternion joyConDelta = rawJoyConRot * Quaternion.Inverse(_jcInitialJoyConRot1);
-                // Apply base yaw so that Joy-Con tilt always aligns with the robot's current facing
-                Quaternion baseRot = Quaternion.Euler(0, currentBaseDeg, 0);
-                Quaternion calibratedTargetRot = baseRot * joyConDelta * _jcHomeRot1;
-                // Slerp smooth to avoid noise / Euler flips
-                Quaternion targetRot = Quaternion.Slerp(
-                    controller.EEFTransform.rotation,
-                    calibratedTargetRot,
-                    Time.deltaTime * JoyConRotSlerpSpeed);
+                Quaternion targetRot = joyConDelta * _jcHomeRot1;
 
                 float targetBaseDeg = currentBaseDeg;
 

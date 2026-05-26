@@ -41,6 +41,27 @@ namespace LIBERO.Networking
 
         public bool HasData { get; private set; }
 
+        // ── Joint feedback to Python (closed-loop IK seed) ─────────
+        // Written by main thread (LiberoEnvironment), read by recv thread.
+        // Index 0 = robot_0, 1 = robot_1; each float[5] = [J0..J4] rad
+        private float[][] _jointFeedback = new float[2][] { new float[5], new float[5] };
+        private bool _jointFeedbackValid;
+        private readonly object _feedbackLock = new object();
+
+        /// <summary>Called from main thread every frame to supply current joint angles.</summary>
+        public void SetJointFeedback(int robotIndex, float[] jointsRad)
+        {
+            if (jointsRad == null) return;
+            lock (_feedbackLock)
+            {
+                var dest = _jointFeedback[robotIndex];
+                int n = Math.Min(dest.Length, jointsRad.Length);
+                for (int i = 0; i < n; i++)
+                    dest[i] = jointsRad[i];
+                _jointFeedbackValid = true;
+            }
+        }
+
         void Start()
         {
             if (AutoStart)
@@ -96,6 +117,10 @@ namespace LIBERO.Networking
                             {
                                 string line = reader.ReadLine();
                                 if (line == null) break; // connection closed
+
+                                // ── Write joint-feedback reply for closed-loop IK seed ──
+                                WriteJointFeedback(stream);
+
                                 _msgQueue.Enqueue(Encoding.UTF8.GetBytes(line));
                             }
                         }
@@ -218,6 +243,53 @@ namespace LIBERO.Networking
             lock (_poseLock)
             {
                 return robotIndex == 0 ? _robot0Pose : _robot1Pose;
+            }
+        }
+
+        /// <summary>
+        /// Serialise current joint angles into a single-line JSON and write back to Python.
+        /// Called from the recv thread immediately after each received message.
+        /// </summary>
+        private void WriteJointFeedback(NetworkStream stream)
+        {
+            bool valid;
+            float[] fb0, fb1;
+            lock (_feedbackLock)
+            {
+                valid = _jointFeedbackValid;
+                if (!valid) return;
+                fb0 = (float[])_jointFeedback[0].Clone();
+                fb1 = (float[])_jointFeedback[1].Clone();
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("{\"fb\":[");
+
+            sb.Append("[");
+            for (int i = 0; i < fb0.Length; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append(fb0[i].ToString("F6"));
+            }
+            sb.Append("],");
+
+            sb.Append("[");
+            for (int i = 0; i < fb1.Length; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append(fb1[i].ToString("F6"));
+            }
+            sb.Append("]}");
+
+            byte[] payload = Encoding.UTF8.GetBytes(sb.ToString() + "\n");
+            try
+            {
+                stream.Write(payload, 0, payload.Length);
+                stream.Flush();
+            }
+            catch (IOException)
+            {
+                // Python side may close the socket — ignore
             }
         }
 
