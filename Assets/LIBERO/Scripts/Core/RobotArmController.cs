@@ -27,7 +27,7 @@ namespace LIBERO.Core
 
         [Header("Control")]
         public float PositionScale = 0.05f;
-        public float GripperScale = 0.1f;
+        public float GripperScale = 90f;
         public ArticulationBody RootAB { get; set; }
 
         [Header("IK Control")]
@@ -403,6 +403,11 @@ namespace LIBERO.Core
             if (Joints == null) return;
             int limit = Mathf.Min(Joints.Length, positions.Length, ArmJointCount);
 
+
+            Debug.Log($"[controller debug]: {Joints.Length} {positions.Length} {ArmJointCount}");  
+            Debug.Log($"[controller limit]: {limit}");
+
+
             _pitchDiagCount++;
             if (_pitchDiagCount % 30 == 0)
             {
@@ -454,30 +459,33 @@ namespace LIBERO.Core
             }
         }
 
-        public virtual void SetGripper(float target)
-        {
-            if (GripperJoint != null)
-            {
-                var drive = GripperJoint.xDrive;
-                drive.target = target * GripperScale;
-                GripperJoint.xDrive = drive;
-            }
-            else
-            {
-                if (LeftFinger != null)
-                {
-                    var drive = LeftFinger.xDrive;
-                    drive.target = target * GripperScale;
-                    LeftFinger.xDrive = drive;
-                }
-                if (RightFinger != null)
-                {
-                    var drive = RightFinger.xDrive;
-                    drive.target = target * GripperScale;
-                    RightFinger.xDrive = drive;
-                }
-            }
-        }
+        public virtual void SetGripper(float target)
+        {
+            if (GripperJoint != null)
+            {
+                var drive = GripperJoint.xDrive;
+                float clamped = Mathf.Clamp(target * GripperScale, drive.lowerLimit, drive.upperLimit);
+                drive.target = clamped;
+                GripperJoint.xDrive = drive;
+            }
+            else
+            {
+                if (LeftFinger != null)
+                {
+                    var drive = LeftFinger.xDrive;
+                    float clamped = Mathf.Clamp(target * GripperScale, drive.lowerLimit, drive.upperLimit);
+                    drive.target = clamped;
+                    LeftFinger.xDrive = drive;
+                }
+                if (RightFinger != null)
+                {
+                    var drive = RightFinger.xDrive;
+                    float clamped = Mathf.Clamp(-target * GripperScale, drive.lowerLimit, drive.upperLimit);
+                    drive.target = clamped;
+                    RightFinger.xDrive = drive;
+                }
+            }
+        }
 
         public virtual void ResetToHomePose()
         {

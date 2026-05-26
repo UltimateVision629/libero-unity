@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using LIBERO.Networking;
 using UnityEngine;
+using System.Linq;
 
 namespace LIBERO.Core
 {
@@ -683,7 +684,9 @@ namespace LIBERO.Core
                 float[] positionsDeg = new float[Mathf.Min(jc.joints.Length, controller.ArmJointCount)];
                 for (int i = 0; i < positionsDeg.Length; i++)
                     positionsDeg[i] = jc.joints[i] * Mathf.Rad2Deg;
+                Debug.Log($"[JoyCon] Robot{robotIndex} positionsDeg: [{string.Join(", ", positionsDeg.Select(v => $"{v:F1}°"))}]");
                 controller.SetJointPositions(positionsDeg);
+                Debug.Log($"[JoyCon] {jc.joints.Length} {controller.ArmJointCount}");
                 if (jc.joints.Length > controller.ArmJointCount)
                     controller.SetGripper(jc.joints[controller.ArmJointCount]);
                 // Send current joint angles back to Python for closed-loop IK seeding

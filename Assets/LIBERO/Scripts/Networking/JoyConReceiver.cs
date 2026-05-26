@@ -208,6 +208,12 @@ namespace LIBERO.Networking
             p = json.IndexOf("\"button\"", startIdx);
             if (p >= 0) pose.button = (int)ParseFloatValue(json, p);
 
+            // Debug.Log($"[pose] {pose.joints:F1}");
+            // if (pose.joints != null && pose.joints.Length >= 5)
+            //     Debug.Log($"[JoyConReceiver] parsed joints (rad): [{pose.joints[0]:F3}, {pose.joints[1]:F3}, {pose.joints[2]:F3}, {pose.joints[3]:F3}, {pose.joints[4]:F3}]");
+
+            // Debug.Log($"[json] {json}");
+
             return pose;
         }
 
