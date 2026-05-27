@@ -1,10 +1,10 @@
 {
   "name": "LIBERO.Scripts",
   "rootNamespace": "LIBERO",
-  "references": ["Unity.Robotics.UrdfImporter"],
+  "references": ["Unity.Robotics.UrdfImporter", "Mujoco.Runtime"],
   "includePlatforms": [],
   "excludePlatforms": [],
-  "allowUnsafeCode": false,
+  "allowUnsafeCode": true,
   "overrideReferences": false,
   "precompiledReferences": [],
   "autoReferenced": true,

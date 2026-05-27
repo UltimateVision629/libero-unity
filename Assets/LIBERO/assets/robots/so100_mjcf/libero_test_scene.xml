@@ -1,0 +1,46 @@
+<mujoco model="libero_test_scene">
+  <include file="so_arm100.xml"/>
+
+  <statistic center="0.3 0 0.15" extent="0.8"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <map znear="0.001"/>
+    <quality shadowsize="2048"/>
+    <global azimuth="120" elevation="-30"/>
+  </visual>
+
+  <worldbody>
+    <light directional="false" diffuse="0.2 0.2 0.2" specular="0 0 0" pos="0 0 2"
+           dir="0 0 -1" castshadow="false"/>
+    <geom name="floor" pos="0 0 -0.001" size="0 0 1" type="plane" rgba="0.3 0.3 0.35 1"/>
+
+    <!-- Robot base mount -->
+    <body name="robot_mount" pos="0 0 0">
+      <geom name="mount_geom" type="cylinder" size="0.08 0.05" pos="0 0 0.025" rgba="0.3 0.3 0.3 1"/>
+    </body>
+
+    <!-- Table -->
+    <body name="table" pos="0.45 0 0">
+      <geom name="table_top" type="box" size="0.25 0.3 0.02" pos="0 0 0.22" rgba="0.55 0.35 0.2 1"/>
+      <geom name="leg_fl" type="cylinder" size="0.015 0.2" pos="0.2 0.25 0.1" rgba="0.4 0.25 0.15 1"/>
+      <geom name="leg_fr" type="cylinder" size="0.015 0.2" pos="0.2 -0.25 0.1" rgba="0.4 0.25 0.15 1"/>
+      <geom name="leg_bl" type="cylinder" size="0.015 0.2" pos="-0.2 0.25 0.1" rgba="0.4 0.25 0.15 1"/>
+      <geom name="leg_br" type="cylinder" size="0.015 0.2" pos="-0.2 -0.25 0.1" rgba="0.4 0.25 0.15 1"/>
+    </body>
+
+    <!-- Three cubes on the table -->
+    <body name="cube_red" pos="0.35 -0.1 0.27">
+      <freejoint/>
+      <geom name="cube_red_geom" type="box" size="0.025 0.025 0.025" rgba="0.9 0.15 0.15 1"/>
+    </body>
+    <body name="cube_green" pos="0.45 0.05 0.27">
+      <freejoint/>
+      <geom name="cube_green_geom" type="box" size="0.025 0.025 0.025" rgba="0.15 0.85 0.15 1"/>
+    </body>
+    <body name="cube_blue" pos="0.52 -0.08 0.27">
+      <freejoint/>
+      <geom name="cube_blue_geom" type="box" size="0.025 0.025 0.025" rgba="0.15 0.25 0.9 1"/>
+    </body>
+  </worldbody>
+</mujoco>
