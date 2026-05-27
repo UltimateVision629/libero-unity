@@ -65,7 +65,7 @@
   <!-- Link upper_arm -->
   <link name="upper_arm">
     <inertial>
-      <mass value="0.162409"/>
+      <mass value="1.5"/>
       <origin xyz="-1.72052e-05 0.0701802 0.00310545" rpy="0 0 0"/>
       <inertia ixx="0.000213312" ixy="0" ixz="0" iyy="0.000167164" iyz="0" izz="7.01522e-05"/>
     </inertial>
@@ -91,7 +91,7 @@
   <!-- Link lower_arm -->
   <link name="lower_arm">
     <inertial>
-      <mass value="0.147968"/>
+      <mass value="1.0"/>
       <origin xyz="-0.00339604 0.00137796 0.0768007" rpy="0 0 0"/>
       <inertia ixx="0.000138803" ixy="0" ixz="0" iyy="0.000107748" iyz="0" izz="4.84242e-05"/>
     </inertial>
@@ -117,7 +117,7 @@
   <!-- Link wrist -->
   <link name="wrist">
     <inertial>
-      <mass value="0.0661321"/>
+      <mass value="0.8"/>
       <origin xyz="-0.00852653 -0.0352279 -2.34622e-05" rpy="0 0 0"/>
       <inertia ixx="3.45403e-05" ixy="0" ixz="0" iyy="2.39041e-05" iyz="0" izz="1.94704e-05"/>
     </inertial>
@@ -143,9 +143,9 @@
   <!-- Link gripper -->
   <link name="gripper">
     <inertial>
-      <mass value="0.0929859"/>
+      <mass value="0.5"/>
       <origin xyz="0.00552377 -0.0280167 0.000483583" rpy="0 0 0"/>
-      <inertia ixx="5.03136e-05" ixy="0" ixz="0" iyy="4.64098e-05" iyz="0" izz="2.72961e-05"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
     </inertial>
     <visual>
       <geometry>
@@ -169,9 +169,9 @@
   <!-- Link jaw -->
   <link name="jaw">
     <inertial>
-      <mass value="0.0202444"/>
+      <mass value="0.5"/>
       <origin xyz="-0.00161745 -0.0303473 0.000449646" rpy="0 0 0"/>
-      <inertia ixx="1.11265e-05" ixy="0" ixz="0" iyy="8.99651e-06" iyz="0" izz="2.99548e-06"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
     </inertial>
     <visual>
       <geometry>

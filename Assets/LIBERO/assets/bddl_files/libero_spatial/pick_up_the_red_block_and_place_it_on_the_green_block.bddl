@@ -1,0 +1,53 @@
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language Pick up the red block and place it on the green block)
+    (:regions
+      (block_red_region
+          (:target main_table)
+          (:ranges (
+              (-0.3 -0.20 -0.35 0.2)
+            )
+          )
+      )
+      (block_green_region
+          (:target main_table)
+          (:ranges (
+              (-0.3 -0.2 -0.35 0.2)
+            )
+          )
+      )
+      (block_blue_region
+          (:target main_table)
+          (:ranges (
+              (-0.3 -0.2 -0.35 0.2)
+            )
+          )
+      )
+    )
+
+  (:fixtures
+    main_table - table
+  )
+
+  (:objects
+    red_block_1 - red_block
+    green_block_1 - green_block
+    blue_block_1 - blue_block
+  )
+
+  (:obj_of_interest
+    red_block_1
+    green_block_1
+  )
+
+  (:init
+    (On red_block_1 main_table_block_red_region)
+    (On green_block_1 main_table_block_green_region)
+    (On blue_block_1 main_table_block_blue_region)
+  )
+
+  (:goal
+    (And (On red_block_1 green_block_1))
+  )
+
+)

@@ -354,6 +354,37 @@ namespace LIBERO.Core
                         }
                         break;
 
+                    case "red_block":
+                        {
+                            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                            cube.transform.SetParent(go.transform);
+                            cube.transform.localScale = new Vector3(0.05f, 0.05f, 0.05f);
+                            var mat = new Material(Shader.Find("Standard"));
+                            mat.color = Color.red;
+                            cube.GetComponent<MeshRenderer>().material = mat;
+                        }
+                        break;
+                    case "green_block":
+                        {
+                            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                            cube.transform.SetParent(go.transform);
+                            cube.transform.localScale = new Vector3(0.05f, 0.05f, 0.05f);
+                            var mat = new Material(Shader.Find("Standard"));
+                            mat.color = Color.green;
+                            cube.GetComponent<MeshRenderer>().material = mat;
+                        }
+                        break;
+                    case "blue_block":
+                        {
+                            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                            cube.transform.SetParent(go.transform);
+                            cube.transform.localScale = new Vector3(0.05f, 0.05f, 0.05f);
+                            var mat = new Material(Shader.Find("Standard"));
+                            mat.color = Color.blue;
+                            cube.GetComponent<MeshRenderer>().material = mat;
+                        }
+                        break;
+
                     default:
                         var defaultPrimitive = GameObject.CreatePrimitive(PrimitiveType.Cube);
                         defaultPrimitive.transform.SetParent(go.transform);

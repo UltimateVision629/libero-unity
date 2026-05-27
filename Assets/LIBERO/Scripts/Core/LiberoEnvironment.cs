@@ -136,6 +136,17 @@ namespace LIBERO.Core
 
             _sceneBuilder.Build(ArenaRoot, ObjectParent);
 
+            if (ObjectParent != null)
+            {
+                var sceneRigidbodies = ObjectParent.GetComponentsInChildren<Rigidbody>();
+                foreach (var rb in sceneRigidbodies)
+                {
+                    rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+                    rb.solverIterations = 50; 
+                    rb.solverVelocityIterations = 20;
+                }
+            }
+
             BuildRobot();
 
             _isInitialized = true;
@@ -322,12 +333,21 @@ namespace LIBERO.Core
                 var allABs = so100.GetComponentsInChildren<ArticulationBody>();
                 foreach (var ab in allABs)
                 {
+                    // 1. 给【所有】关节强制穿上防穿模护甲
+                    ab.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+                    
+                    // 2. 增加物理解算迭代次数（至关重要！）
+                    // 当夹爪马达发力 (500f) 挤压方块时，引擎需要更多次计算来阻止它们融合
+                    ab.solverIterations = 50; 
+                    ab.solverVelocityIterations = 20;
+
+                    // 3. 只有底座（根节点）需要被钉死在天上
                     if (ab.transform.parent == so100.transform ||
                         ab.transform.parent?.GetComponent<ArticulationBody>() == null)
                     {
                         ab.immovable = true;
                         ab.jointType = ArticulationJointType.FixedJoint;
-                        break;
+                        // 删掉了该死的 break; ！让循环继续处理剩下的手臂和夹爪！
                     }
                 }
 
@@ -419,14 +439,15 @@ namespace LIBERO.Core
                 gripperJoint.linearLockY = ArticulationDofLock.LockedMotion;
                 gripperJoint.linearLockZ = ArticulationDofLock.LockedMotion;
                 var gDrive = gripperJoint.xDrive;
-                gDrive.stiffness = 1000f;
+                gDrive.stiffness = 10000f;
                 gDrive.damping = 100f;
+                gDrive.forceLimit = 15f;
                 gripperJoint.xDrive = gDrive;
             }
 
             so100.transform.rotation = Quaternion.Euler(0, -90, 0);
             so100.transform.SetParent(ArenaRoot.transform);
-            so100.transform.localPosition = new Vector3(xPosition, 0, GetRobotBasePosition().z);
+            so100.transform.localPosition = new Vector3(xPosition, -0.075f, GetRobotBasePosition().z);
             string basePath = AssetDatabase.GetAssetPath("robots/so100/base.obj");
 
             string SO100_basePath = AssetDatabase.GetAssetPath("robots/so100/base.obj");
