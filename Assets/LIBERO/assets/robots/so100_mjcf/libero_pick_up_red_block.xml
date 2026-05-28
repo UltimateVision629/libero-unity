@@ -93,13 +93,12 @@
     <body name="L_Base" childclass="so_arm100" pos="-0.70 0.20 -0.075" euler="0 0 1.57079">
       <geom type="mesh" mesh="Base" class="visual"/>
       <geom type="mesh" mesh="Base_Motor" class="motor_visual"/>
-      <geom type="mesh" mesh="Base" class="collision"/>
+      <geom type="mesh" mesh="Base" contype="0" conaffinity="0"/>
       <body name="L_Rotation_Pitch" pos="0 -0.0452 0.0165" quat="0.707105 0.707108 0 0">
         <inertial pos="-9.07886e-05 0.0590972 0.031089" quat="0.363978 0.441169 -0.623108 0.533504" mass="0.119226" diaginertia="5.94278e-05 5.89975e-05 3.13712e-05"/>
         <joint name="L_Rotation" class="Rotation"/>
         <geom type="mesh" mesh="Rotation_Pitch" class="visual"/>
         <geom type="mesh" mesh="Rotation_Pitch_Motor" class="motor_visual"/>
-        <geom type="mesh" mesh="Rotation_Pitch" class="collision"/>
         <body name="L_Upper_Arm" pos="0 0.1025 0.0306" euler="1.57079 0 0">
           <inertial pos="-1.72052e-05 0.0701802 0.00310545" quat="0.50104 0.498994 -0.493562 0.50632" mass="0.162409" diaginertia="0.000213312 0.000167164 7.01522e-05"/>
           <joint name="L_Pitch" class="Pitch"/>
@@ -152,13 +151,12 @@
     <body name="R_Base" childclass="so_arm100" pos="-0.70 -0.20 -0.075" euler="0 0 1.57079">
       <geom type="mesh" mesh="Base" class="visual"/>
       <geom type="mesh" mesh="Base_Motor" class="motor_visual"/>
-      <geom type="mesh" mesh="Base" class="collision"/>
+      <geom type="mesh" mesh="Base" contype="0" conaffinity="0"/>
       <body name="R_Rotation_Pitch" pos="0 -0.0452 0.0165" quat="0.707105 0.707108 0 0">
         <inertial pos="-9.07886e-05 0.0590972 0.031089" quat="0.363978 0.441169 -0.623108 0.533504" mass="0.119226" diaginertia="5.94278e-05 5.89975e-05 3.13712e-05"/>
         <joint name="R_Rotation" class="Rotation"/>
         <geom type="mesh" mesh="Rotation_Pitch" class="visual"/>
         <geom type="mesh" mesh="Rotation_Pitch_Motor" class="motor_visual"/>
-        <geom type="mesh" mesh="Rotation_Pitch" class="collision"/>
         <body name="R_Upper_Arm" pos="0 0.1025 0.0306" euler="1.57079 0 0">
           <inertial pos="-1.72052e-05 0.0701802 0.00310545" quat="0.50104 0.498994 -0.493562 0.50632" mass="0.162409" diaginertia="0.000213312 0.000167164 7.01522e-05"/>
           <joint name="R_Pitch" class="Pitch"/>

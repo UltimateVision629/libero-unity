@@ -102,23 +102,7 @@ namespace LIBERO.Core
             if (!arm.TryGetValue(jointType, out var act) || act.Joint == null) return;
 
             var data = MjScene.Instance.Data;
-            var model = MjScene.Instance.Model;
-
-            if (jointType == "Rotation")
-            {
-                // Rotation actuator broken in MuJoCo 3.2.4 — use qpos teleport (no collision impact)
-                int jid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act.Joint.MujocoName);
-                if (jid >= 0)
-                {
-                    data->qpos[model->jnt_qposadr[jid]] = valueRad;
-                    data->qvel[model->jnt_dofadr[jid]] = 0;
-                }
-            }
-            else
-            {
-                // Force-driven via actuator — respects collision physics
-                data->ctrl[act.MujocoId] = valueRad;
-            }
+            data->ctrl[act.MujocoId] = valueRad;
             act.Control = valueRad;
         }
 
