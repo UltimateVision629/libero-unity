@@ -71,34 +71,14 @@ class JoyConSender:
         self.conn = None
         self.robot = get_robot("so100")
 
-        # Per-robot arm joint state for IK seeding (4 DOF: J2..J5)
-        self.current_arm_q_l = _INIT_ARM_Q.copy()
+        # Right arm joint state for IK seeding (4 DOF: J2..J5)
         self.current_arm_q_r = _INIT_ARM_Q.copy()
 
     # ── Initialization ───────────────────────────────────────────────
 
     def init_controllers(self):
-        """Connect to both Joy-Con controllers."""
+        """Connect to right Joy-Con controller only."""
         offset = list(_SO100_HOME_XYZ)
-
-        print("Initializing left Joy-Con ...")
-        try:
-            self.jc_left = JoyconRobotics(
-                device="left",
-                horizontal_stick_mode="yaw_diff",
-                close_y=True,
-                limit_dof=True,
-                glimit=CONTROL_GLIMIT,
-                offset_position_m=offset,
-                common_rad=False,
-                lerobot=True,
-                pitch_down_double=True,
-            )
-        except RuntimeError as e:
-            print(f"  ERROR: {e}")
-            print("  Please connect the left Joy-Con via Bluetooth and try again.")
-            sys.exit(1)
-        print("  Left Joy-Con ready.")
 
         print("Initializing right Joy-Con ...")
         try:
@@ -208,12 +188,6 @@ class JoyConSender:
 
         while True:
             try:
-                # ── Left Joy-Con → joints ──
-                joints_l, ok_l = self.compute_joints(self.jc_left, self.current_arm_q_l)
-                print("joints_l: ", joints_l)
-                if ok_l:
-                    self.current_arm_q_l = joints_l[1:5].copy()  # update IK seed
-
                 # ── Right Joy-Con → joints ──
                 joints_r, ok_r = self.compute_joints(self.jc_right, self.current_arm_q_r)
                 if ok_r:
@@ -221,34 +195,20 @@ class JoyConSender:
 
                 # ── Diagnostics ──
                 diag_count += 1
-                if diag_count % 60 == 0 and ok_l:
-                    deg = [f"{math.degrees(v):+6.1f}°" for v in joints_l]
-                    print(f"[J] L joints={deg} | gripper={joints_l[-1]:.2f}")
-
+                if diag_count % 60 == 0 and ok_r:
                     deg = [f"{math.degrees(v):+6.1f}°" for v in joints_r]
                     print(f"[J] R joints={deg} | gripper={joints_r[-1]:.2f}")
 
                 # ── Build JSON message ──
                 msg = {}
 
-                # ── 左手 ──
-                if ok_l and joints_l is not None:
-                    unity_joints_l = joints_l.copy()
-                    unity_joints_l[1] += math.pi  # J2: -180° 映射到 0°
-                    unity_joints_l[2] -= math.pi  # J3: +180° 映射到 0°
-                    
-                    msg["robot_0"] = {
-                        "joints": [float(v) for v in unity_joints_l],
-                        "button": 0,
-                    }
-
-                # ── 右手 ──
+                # ── 右手 → robot_0 (only one arm active) ──
                 if ok_r and joints_r is not None:
                     unity_joints_r = joints_r.copy()
-                    unity_joints_r[1] += math.pi  # J2: -180° 映射到 0°
-                    unity_joints_r[2] -= math.pi  # J3: +180° 映射到 0°
-                    
-                    msg["robot_1"] = {
+                    # unity_joints_r[1] += math.pi  # J2: -180° 映射到 0°
+                    # unity_joints_r[2] -= math.pi  # J3: +180° 映射到 0°
+
+                    msg["robot_0"] = {
                         "joints": [float(v) for v in unity_joints_r],
                         "button": 0,
                     }
@@ -300,16 +260,12 @@ class JoyConSender:
                 try:
                     data = json.loads(line)
                     fb = data.get("fb")
-                    if fb and len(fb) >= 2:
-                        l_joints = np.array(fb[0][1:5], dtype=np.float64)  # 准确提取 J2, J3, J4, J5
-                        r_joints = np.array(fb[1][1:5], dtype=np.float64)
+                    if fb and len(fb) >= 1:
+                        r_joints = np.array(fb[0][1:5], dtype=np.float64)
 
-                        l_joints[0] -= math.pi  
-                        l_joints[1] += math.pi 
-                        r_joints[0] -= math.pi
-                        r_joints[1] += math.pi
+                        # r_joints[0] -= math.pi
+                        # r_joints[1] += math.pi
 
-                        self.current_arm_q_l = l_joints
                         self.current_arm_q_r = r_joints
                 except (json.JSONDecodeError, ValueError):
                     pass

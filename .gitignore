@@ -40,6 +40,9 @@ ReportAssets/
 # NuGet
 packages/
 
+# MuJoCo auto-generated imports
+Assets/Local/MjImports/
+
 # Agent
 AGENTS.md
 opencode.json
