@@ -71,14 +71,35 @@ class JoyConSender:
         self.conn = None
         self.robot = get_robot("so100")
 
-        # Right arm joint state for IK seeding (4 DOF: J2..J5)
+        # Per-arm joint state for IK seeding (4 DOF: J2..J5)
+        self.current_arm_q_l = _INIT_ARM_Q.copy()
         self.current_arm_q_r = _INIT_ARM_Q.copy()
 
     # ── Initialization ───────────────────────────────────────────────
 
     def init_controllers(self):
-        """Connect to right Joy-Con controller only."""
+        """Connect to both Joy-Con controllers."""
         offset = list(_SO100_HOME_XYZ)
+
+        print("Initializing left Joy-Con ...")
+        try:
+            self.jc_left = JoyconRobotics(
+                device="left",
+                horizontal_stick_mode="yaw_diff",
+                close_y=True,
+                limit_dof=True,
+                glimit=CONTROL_GLIMIT,
+                offset_position_m=offset,
+                common_rad=False,
+                lerobot=True,
+                pitch_down_double=True,
+            )
+        except RuntimeError as e:
+            print(f"  WARNING: {e}")
+            print("  Left Joy-Con not available, continuing with right only.")
+            self.jc_left = None
+        else:
+            print("  Left Joy-Con ready.")
 
         print("Initializing right Joy-Con ...")
         try:
@@ -188,30 +209,32 @@ class JoyConSender:
 
         while True:
             try:
-                # ── Right Joy-Con → joints ──
+                msg = {}
+
+                # ── Left Joy-Con → joints → robot_1 ──
+                if self.jc_left is not None:
+                    joints_l, ok_l = self.compute_joints(self.jc_left, self.current_arm_q_l)
+                    if ok_l:
+                        self.current_arm_q_l = joints_l[1:5].copy()
+                        msg["robot_1"] = {
+                            "joints": [float(v) for v in joints_l],
+                            "button": 0,
+                        }
+
+                # ── Right Joy-Con → joints → robot_0 ──
                 joints_r, ok_r = self.compute_joints(self.jc_right, self.current_arm_q_r)
                 if ok_r:
                     self.current_arm_q_r = joints_r[1:5].copy()
+                    msg["robot_0"] = {
+                        "joints": [float(v) for v in joints_r],
+                        "button": 0,
+                    }
 
                 # ── Diagnostics ──
                 diag_count += 1
-                if diag_count % 60 == 0 and ok_r:
-                    deg = [f"{math.degrees(v):+6.1f}°" for v in joints_r]
-                    print(f"[J] R joints={deg} | gripper={joints_r[-1]:.2f}")
-
-                # ── Build JSON message ──
-                msg = {}
-
-                # ── 右手 → robot_0 (only one arm active) ──
-                if ok_r and joints_r is not None:
-                    unity_joints_r = joints_r.copy()
-                    # unity_joints_r[1] += math.pi  # J2: -180° 映射到 0°
-                    # unity_joints_r[2] -= math.pi  # J3: +180° 映射到 0°
-
-                    msg["robot_0"] = {
-                        "joints": [float(v) for v in unity_joints_r],
-                        "button": 0,
-                    }
+                if diag_count % 60 == 0:
+                    if ok_l: print(f"[J] L joints={[f'{math.degrees(v):+6.1f}°' for v in joints_l]} | gripper={joints_l[-1]:.2f}")
+                    if ok_r: print(f"[J] R joints={[f'{math.degrees(v):+6.1f}°' for v in joints_r]} | gripper={joints_r[-1]:.2f}")
 
                 if msg:
                     data = (json.dumps(msg) + "\n").encode("utf-8")
@@ -260,13 +283,11 @@ class JoyConSender:
                 try:
                     data = json.loads(line)
                     fb = data.get("fb")
-                    if fb and len(fb) >= 1:
-                        r_joints = np.array(fb[0][1:5], dtype=np.float64)
-
-                        # r_joints[0] -= math.pi
-                        # r_joints[1] += math.pi
-
-                        self.current_arm_q_r = r_joints
+                    if fb and len(fb) >= 2:
+                        self.current_arm_q_l = np.array(fb[0][1:5], dtype=np.float64)
+                        self.current_arm_q_r = np.array(fb[1][1:5], dtype=np.float64)
+                    elif fb and len(fb) >= 1:
+                        self.current_arm_q_r = np.array(fb[0][1:5], dtype=np.float64)
                 except (json.JSONDecodeError, ValueError):
                     pass
         except (BrokenPipeError, ConnectionResetError, OSError):

@@ -69,6 +69,7 @@ namespace LIBERO.Core
             if (_warmup < WarmupFrames) { _warmup++; return; }
 
             ProcessArm(JoyConInput.GetRobotPose(0), _rArm, 0);
+            ProcessArm(JoyConInput.GetRobotPose(1), _lArm, 1);
         }
 
         private unsafe void ProcessArm(JoyConPose jc, Dictionary<string, MjActuator> arm, int index)

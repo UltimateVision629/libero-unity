@@ -80,17 +80,17 @@
     <geom name="floor" pos="0 0 -0.001" size="0 0 1" type="plane" rgba="0.25 0.25 0.3 1"/>
 
     <!-- ===== LEFT arm base pedestal ===== -->
-    <body name="L_pedestal" pos="-0.70 0.30 -0.95" euler="0 0 1.57079">
+    <body name="L_pedestal" pos="-0.70 0.20 -0.95" euler="0 0 1.57079">
       <geom name="L_pedestal_geom" type="mesh" mesh="pedestal" rgba="0.4 0.4 0.4 1"/>
     </body>
 
     <!-- ===== RIGHT arm base pedestal ===== -->
-    <body name="R_pedestal" pos="-0.70 -0.30 -0.95" euler="0 0 1.57079">
+    <body name="R_pedestal" pos="-0.70 -0.20 -0.95" euler="0 0 1.57079">
       <geom name="R_pedestal_geom" type="mesh" mesh="pedestal" rgba="0.4 0.4 0.4 1"/>
     </body>
 
     <!-- ===== LEFT Arm (SO-ARM100) ===== -->
-    <body name="L_Base" childclass="so_arm100" pos="-0.70 0.30 -0.075" euler="0 0 1.57079">
+    <body name="L_Base" childclass="so_arm100" pos="-0.70 0.20 -0.075" euler="0 0 1.57079">
       <geom type="mesh" mesh="Base" class="visual"/>
       <geom type="mesh" mesh="Base_Motor" class="motor_visual"/>
       <geom type="mesh" mesh="Base" class="collision"/>
@@ -149,7 +149,7 @@
     </body>
 
     <!-- ===== RIGHT Arm (SO-ARM100) ===== -->
-    <body name="R_Base" childclass="so_arm100" pos="-0.70 -0.30 -0.075" euler="0 0 1.57079">
+    <body name="R_Base" childclass="so_arm100" pos="-0.70 -0.20 -0.075" euler="0 0 1.57079">
       <geom type="mesh" mesh="Base" class="visual"/>
       <geom type="mesh" mesh="Base_Motor" class="motor_visual"/>
       <geom type="mesh" mesh="Base" class="collision"/>
