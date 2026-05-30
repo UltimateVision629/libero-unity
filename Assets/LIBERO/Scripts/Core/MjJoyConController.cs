@@ -76,6 +76,13 @@ namespace LIBERO.Core
         {
             if (arm.Count == 0) return;
 
+            // Home / Capture button → reset arm to home pose
+            if (jc.button == 1)
+            {
+                ResetArm(arm);
+                return;
+            }
+
             if (jc.joints != null && jc.joints.Length >= 5)
             {
                 SetJoint(arm, "Rotation", jc.joints[0]);
@@ -104,6 +111,17 @@ namespace LIBERO.Core
             var data = MjScene.Instance.Data;
             data->ctrl[act.MujocoId] = valueRad;
             act.Control = valueRad;
+        }
+
+        private void ResetArm(Dictionary<string, MjActuator> arm)
+        {
+            SetJoint(arm, "Rotation", 0f);
+            SetJoint(arm, "Pitch", -3.14f);
+            SetJoint(arm, "Elbow", 3.14f);
+            SetJoint(arm, "Wrist_Pitch", 0.0f);
+            SetJoint(arm, "Wrist_Roll", -1.57f);
+            SetJoint(arm, "Jaw", 0.04f);
+            Debug.Log("[MjJoyCon] Arm reset to home pose");
         }
 
         private void OnDestroy()

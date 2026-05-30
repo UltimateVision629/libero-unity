@@ -75,6 +75,10 @@ class JoyConSender:
         self.current_arm_q_l = _INIT_ARM_Q.copy()
         self.current_arm_q_r = _INIT_ARM_Q.copy()
 
+        # Edge detection for Home / Capture button (one-shot reset)
+        self._prev_home_r = 0
+        self._prev_capture_l = 0
+
     # ── Initialization ───────────────────────────────────────────────
 
     def init_controllers(self):
@@ -216,18 +220,26 @@ class JoyConSender:
                     joints_l, ok_l = self.compute_joints(self.jc_left, self.current_arm_q_l)
                     if ok_l:
                         self.current_arm_q_l = joints_l[1:5].copy()
+                        # Capture button (left JoyCon) → reset left arm (robot_1)
+                        capture_l = self.jc_left.joycon.get_button_capture()
+                        btn_l = 1 if (capture_l == 1 and self._prev_capture_l == 0) else 0
+                        self._prev_capture_l = capture_l
                         msg["robot_1"] = {
                             "joints": [float(v) for v in joints_l],
-                            "button": 0,
+                            "button": btn_l,
                         }
 
                 # ── Right Joy-Con → joints → robot_0 ──
                 joints_r, ok_r = self.compute_joints(self.jc_right, self.current_arm_q_r)
                 if ok_r:
                     self.current_arm_q_r = joints_r[1:5].copy()
+                    # Home button (right JoyCon) → reset right arm (robot_0)
+                    home_r = self.jc_right.joycon.get_button_home()
+                    btn_r = 1 if (home_r == 1 and self._prev_home_r == 0) else 0
+                    self._prev_home_r = home_r
                     msg["robot_0"] = {
                         "joints": [float(v) for v in joints_r],
-                        "button": 0,
+                        "button": btn_r,
                     }
 
                 # ── Diagnostics ──
