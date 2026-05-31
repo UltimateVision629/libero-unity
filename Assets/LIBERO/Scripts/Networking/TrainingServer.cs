@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using LIBERO.Core;
+using Mujoco;
 using UnityEngine;
 
 namespace LIBERO.Networking
@@ -199,7 +200,16 @@ namespace LIBERO.Networking
             if (Env != null)
                 return ObsToJson(Env.ResetEnvironment());
 
-            // Fallback: collect observation directly (MuJoCo XML import mode)
+            // Fallback: reset MuJoCo scene to initial state
+            if (MjScene.InstanceExists)
+            {
+                unsafe
+                {
+                    MujocoLib.mj_resetData(MjScene.Instance.Model, MjScene.Instance.Data);
+                }
+                Debug.Log("[TrainingServer] MuJoCo scene reset to initial state.");
+            }
+
             return ObsToJson(CollectObsFallback());
         }
 
