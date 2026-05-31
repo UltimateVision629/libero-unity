@@ -79,6 +79,9 @@
            dir="0 0 -1" castshadow="false"/>
     <geom name="floor" pos="0 0 -0.001" size="0 0 1" type="plane" rgba="0.25 0.25 0.3 1"/>
 
+    <!-- Camera position marker: behind pedestal, looking at table -->
+    <site name="agentview_site" pos="-0.75 0 0.40" size="0.01"/>
+
     <!-- ===== Shared base pedestal (centered between arms) ===== -->
     <body name="pedestal" pos="-0.70 0 -0.95" euler="0 0 1.57079">
       <geom name="pedestal_geom" type="mesh" mesh="pedestal" rgba="0.4 0.4 0.4 1"/>

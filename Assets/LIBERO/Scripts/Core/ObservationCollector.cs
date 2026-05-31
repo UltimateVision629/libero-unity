@@ -48,6 +48,15 @@ namespace LIBERO.Core
 
     public class ObservationCollector : MonoBehaviour
     {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoCreate()
+        {
+            if (FindObjectOfType<ObservationCollector>() != null) return;
+            var go = new GameObject("ObservationCollector");
+            DontDestroyOnLoad(go);
+            go.AddComponent<ObservationCollector>();
+        }
+
         [Header("Camera Settings")]
         public Camera AgentviewCamera;
         public Camera EyeInHandCamera;
@@ -69,6 +78,36 @@ namespace LIBERO.Core
             _eyeInHandRT = new RenderTexture(ImageWidth, ImageHeight, 24, RenderTextureFormat.ARGB32);
             _agentviewTex = new Texture2D(ImageWidth, ImageHeight, TextureFormat.RGB24, false);
             _eyeInHandTex = new Texture2D(ImageWidth, ImageHeight, TextureFormat.RGB24, false);
+
+            if (AgentviewCamera == null)
+                CreateAgentviewCamera();
+        }
+
+        private void CreateAgentviewCamera()
+        {
+            var camGo = new GameObject("Agentview Camera");
+            camGo.transform.SetParent(transform);
+            var cam = camGo.AddComponent<Camera>();
+
+            // Read position from MuJoCo XML <site name="agentview_site">
+            var site = GameObject.Find("agentview_site");
+            if (site != null)
+            {
+                camGo.transform.position = site.transform.position;
+                camGo.transform.rotation = site.transform.rotation;
+                Debug.Log($"[ObsCollector] Camera placed at site agentview_site: {site.transform.position}");
+            }
+            else
+            {
+                // Fallback hardcoded position
+                camGo.transform.position = new Vector3(0f, 0.50f, -0.70f);
+                Debug.Log("[ObsCollector] agentview_site not found, using fallback position");
+            }
+
+            camGo.transform.LookAt(Vector3.zero);
+            cam.nearClipPlane = 0.1f;
+            cam.enabled = true;
+            AgentviewCamera = cam;
         }
 
         public Observation Collect(Dictionary<string, ObjectState> objectStates, RobotArmController robot)

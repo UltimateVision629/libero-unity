@@ -18,6 +18,15 @@ namespace LIBERO.Networking
     /// </summary>
     public class TrainingServer : MonoBehaviour
     {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoCreate()
+        {
+            if (FindObjectOfType<TrainingServer>() != null) return;
+            var go = new GameObject("TrainingServer");
+            DontDestroyOnLoad(go);
+            go.AddComponent<TrainingServer>();
+        }
+
         [Header("TCP Settings")]
         public int ListenPort = 5556;
         public bool AutoStart = true;
@@ -184,17 +193,21 @@ namespace LIBERO.Networking
 
         private string HandleReset()
         {
-            if (Env == null)
-                return "{\"error\":\"LiberoEnvironment not found\"}";
+            if (Env != null)
+                return ObsToJson(Env.ResetEnvironment());
 
-            Observation obs = Env.ResetEnvironment();
-            return ObsToJson(obs);
+            // Fallback: collect observation directly (MuJoCo XML import mode)
+            return ObsToJson(CollectObsFallback());
         }
 
         private string HandleStep(float[] action)
         {
             if (Env == null)
-                return "{\"error\":\"LiberoEnvironment not found\"}";
+            {
+                // Stub: no LiberoEnvironment, return current obs with zero reward
+                var fallbackObs = CollectObsFallback();
+                return "{\"reward\":0.0000,\"done\":false,\"step\":0,\"success\":false,\"obs\":" + ObsToJson(fallbackObs) + "}";
+            }
 
             var (obs, reward, done, info) = Env.Step(action);
 
@@ -212,14 +225,23 @@ namespace LIBERO.Networking
 
         private string HandleGetObs()
         {
-            if (Env == null)
-                return "{\"error\":\"LiberoEnvironment not found\"}";
+            if (Env != null)
+            {
+                var method = typeof(LiberoEnvironment).GetMethod("GatherObservation",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                return ObsToJson((Observation)method.Invoke(Env, null));
+            }
 
-            // Use reflection to call private GatherObservation
-            var method = typeof(LiberoEnvironment).GetMethod("GatherObservation",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            Observation obs = (Observation)method.Invoke(Env, null);
-            return ObsToJson(obs);
+            // Fallback: collect observation directly (MuJoCo XML import mode)
+            return ObsToJson(CollectObsFallback());
+        }
+
+        private Observation CollectObsFallback()
+        {
+            var collector = FindObjectOfType<ObservationCollector>();
+            if (collector == null)
+                return new Observation { JointPositions = new float[7], EEFPosition = new float[3], EEFQuaternion = new float[4], GripperQPos = new float[2] };
+            return collector.Collect(null, null);
         }
 
         private string HandleGetTask()
