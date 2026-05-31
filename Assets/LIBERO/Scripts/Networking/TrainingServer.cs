@@ -289,6 +289,16 @@ namespace LIBERO.Networking
             sb.Append(",\"robot0_gripper_qpos\":");
             sb.Append(FloatArrayToJson(obs.GripperQPos));
 
+            // robot_1 (left arm) proprioception
+            sb.Append(",\"robot1_joint_pos\":");
+            sb.Append(FloatArrayToJson(obs.JointPositions1));
+            sb.Append(",\"robot1_eef_pos\":");
+            sb.Append(FloatArrayToJson(obs.EEFPosition1));
+            sb.Append(",\"robot1_eef_quat\":");
+            sb.Append(FloatArrayToJson(obs.EEFQuaternion1));
+            sb.Append(",\"robot1_gripper_qpos\":");
+            sb.Append(FloatArrayToJson(obs.GripperQPos1));
+
             // object states
             if (obs.ObjectPositions != null && obs.ObjectPositions.Count > 0)
             {
@@ -342,14 +352,18 @@ namespace LIBERO.Networking
             int colon = json.IndexOf(':', idx + search.Length);
             if (colon < 0) return null;
 
-            // skip whitespace
+            // skip whitespace after colon
             int start = colon + 1;
-            while (start < json.Length && (json[start] == ' ' || json[start] == '\"'))
+            while (start < json.Length && json[start] == ' ')
                 start++;
 
+            if (start >= json.Length)
+                return "";
+
             // if quoted, find closing quote
-            if (start > colon + 1 && json[colon + 1] == '\"')
+            if (json[start] == '\"')
             {
+                start++; // skip opening quote
                 int end = json.IndexOf('\"', start);
                 if (end < 0) end = json.Length;
                 return json.Substring(start, end - start);

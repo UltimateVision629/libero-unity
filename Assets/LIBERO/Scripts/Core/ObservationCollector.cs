@@ -12,10 +12,15 @@ namespace LIBERO.Core
         public int ImageWidth;
         public int ImageHeight;
 
-        public float[] JointPositions;
+        public float[] JointPositions;   // robot_0 (right arm)
         public float[] EEFPosition;
         public float[] EEFQuaternion;
         public float[] GripperQPos;
+
+        public float[] JointPositions1;  // robot_1 (left arm)
+        public float[] EEFPosition1;
+        public float[] EEFQuaternion1;
+        public float[] GripperQPos1;
 
         public Dictionary<string, float[]> ObjectPositions;
         public Dictionary<string, float[]> ObjectQuaternions;
@@ -29,7 +34,11 @@ namespace LIBERO.Core
                 ["robot0_joint_pos"] = JointPositions,
                 ["robot0_eef_pos"] = EEFPosition,
                 ["robot0_eef_quat"] = EEFQuaternion,
-                ["robot0_gripper_qpos"] = GripperQPos
+                ["robot0_gripper_qpos"] = GripperQPos,
+                ["robot1_joint_pos"] = JointPositions1,
+                ["robot1_eef_pos"] = EEFPosition1,
+                ["robot1_eef_quat"] = EEFQuaternion1,
+                ["robot1_gripper_qpos"] = GripperQPos1
             };
 
             if (ObjectPositions != null)
@@ -160,7 +169,8 @@ namespace LIBERO.Core
             }
             else if (MjScene.InstanceExists)
             {
-                CollectMuJoCoProprioception(ref obs, "R_");
+                CollectMuJoCoProprioception(ref obs, "R_", isRobot1: false);
+                CollectMuJoCoProprioception(ref obs, "L_", isRobot1: true);
             }
 
             // Object states
@@ -178,7 +188,7 @@ namespace LIBERO.Core
             return obs;
         }
 
-        private unsafe void CollectMuJoCoProprioception(ref Observation obs, string prefix)
+        private unsafe void CollectMuJoCoProprioception(ref Observation obs, string prefix, bool isRobot1)
         {
             var model = MjScene.Instance.Model;
             var data = MjScene.Instance.Data;
@@ -190,23 +200,30 @@ namespace LIBERO.Core
                 int jid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, $"{prefix}_{jointNames[i]}");
                 positions[i] = jid >= 0 ? (float)data->qpos[jid] : 0f;
             }
-            obs.JointPositions = positions;
 
             int sid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_SITE, $"{prefix}_eef_site");
+            Vector3 eefPos = Vector3.zero;
+            Quaternion eefQuat = Quaternion.identity;
             if (sid >= 0)
             {
-                Vector3 eefPos = MjEngineTool.UnityVector3(data->site_xpos + sid * 3);
-                obs.EEFPosition = new float[] { eefPos.x, eefPos.y, eefPos.z };
-                Quaternion eefQuat = MjEngineTool.UnityQuaternionFromMatrix(data->site_xmat + sid * 9);
-                obs.EEFQuaternion = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
+                eefPos = MjEngineTool.UnityVector3(data->site_xpos + sid * 3);
+                eefQuat = MjEngineTool.UnityQuaternionFromMatrix(data->site_xmat + sid * 9);
+            }
+
+            if (isRobot1)
+            {
+                obs.JointPositions1 = positions;
+                obs.EEFPosition1 = new float[] { eefPos.x, eefPos.y, eefPos.z };
+                obs.EEFQuaternion1 = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
+                obs.GripperQPos1 = new float[] { positions[5], 0f };
             }
             else
             {
-                obs.EEFPosition = new float[3];
-                obs.EEFQuaternion = new float[] { 0, 0, 0, 1 };
+                obs.JointPositions = positions;
+                obs.EEFPosition = new float[] { eefPos.x, eefPos.y, eefPos.z };
+                obs.EEFQuaternion = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
+                obs.GripperQPos = new float[] { positions[5], 0f };
             }
-
-            obs.GripperQPos = new float[] { positions[5], 0f };
         }
 
         private void OnDestroy()
