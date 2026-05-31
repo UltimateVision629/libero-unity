@@ -122,6 +122,7 @@
                 <geom type="mesh" mesh="Fixed_Jaw_Motor" class="motor_visual"/>
                 <geom type="mesh" mesh="Fixed_Jaw_Collision_1" class="collision"/>
                 <geom type="mesh" mesh="Fixed_Jaw_Collision_2" class="collision"/>
+                <site name="L_eef_site" pos="0.01 -0.09 0" size="0.005"/>
                 <geom class="finger_collision" name="L_fixed_jaw_pad_1" size="0.001 0.005 0.004" pos="0.0089 -0.1014 0"/>
                 <geom class="finger_collision" name="L_fixed_jaw_pad_2" size="0.001 0.005 0.006" pos="0.0109 -0.0914 0"/>
                 <geom class="finger_collision" name="L_fixed_jaw_pad_3" size="0.001 0.01 0.007" pos="0.0126 -0.0768 0"/>
@@ -180,6 +181,7 @@
                 <geom type="mesh" mesh="Fixed_Jaw_Motor" class="motor_visual"/>
                 <geom type="mesh" mesh="Fixed_Jaw_Collision_1" class="collision"/>
                 <geom type="mesh" mesh="Fixed_Jaw_Collision_2" class="collision"/>
+                <site name="R_eef_site" pos="0.01 -0.09 0" size="0.005"/>
                 <geom class="finger_collision" name="R_fixed_jaw_pad_1" size="0.001 0.005 0.004" pos="0.0089 -0.1014 0"/>
                 <geom class="finger_collision" name="R_fixed_jaw_pad_2" size="0.001 0.005 0.006" pos="0.0109 -0.0914 0"/>
                 <geom class="finger_collision" name="R_fixed_jaw_pad_3" size="0.001 0.01 0.007" pos="0.0126 -0.0768 0"/>

@@ -31,6 +31,9 @@ namespace LIBERO.Networking
         public int ListenPort = 5556;
         public bool AutoStart = true;
 
+        [Header("Task (used without LiberoEnvironment)")]
+        public string LanguageInstruction = "pick up the red block";
+
         [Header("References")]
         public LiberoEnvironment Env;
 
@@ -246,11 +249,12 @@ namespace LIBERO.Networking
 
         private string HandleGetTask()
         {
-            if (Env == null)
-                return "{\"error\":\"LiberoEnvironment not found\"}";
-
-            string lang = Env.GetLanguageInstruction();
-            return $"{{\"language_instruction\":\"{EscapeJson(lang)}\"}}";
+            if (Env != null)
+            {
+                string lang = Env.GetLanguageInstruction();
+                return $"{{\"language_instruction\":\"{EscapeJson(lang)}\"}}";
+            }
+            return $"{{\"language_instruction\":\"{EscapeJson(LanguageInstruction)}\"}}";
         }
 
         private string ObsToJson(Observation obs)

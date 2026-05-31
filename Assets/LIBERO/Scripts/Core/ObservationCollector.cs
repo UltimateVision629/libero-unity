@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Mujoco;
 using UnityEngine;
 
 namespace LIBERO.Core
@@ -157,6 +158,10 @@ namespace LIBERO.Core
                 obs.EEFQuaternion = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
                 obs.GripperQPos = gripperQPos;
             }
+            else if (MjScene.InstanceExists)
+            {
+                CollectMuJoCoProprioception(ref obs, "R_");
+            }
 
             // Object states
             if (objectStates != null)
@@ -171,6 +176,37 @@ namespace LIBERO.Core
             }
 
             return obs;
+        }
+
+        private unsafe void CollectMuJoCoProprioception(ref Observation obs, string prefix)
+        {
+            var model = MjScene.Instance.Model;
+            var data = MjScene.Instance.Data;
+
+            string[] jointNames = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw" };
+            float[] positions = new float[6];
+            for (int i = 0; i < 6; i++)
+            {
+                int jid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, $"{prefix}_{jointNames[i]}");
+                positions[i] = jid >= 0 ? (float)data->qpos[jid] : 0f;
+            }
+            obs.JointPositions = positions;
+
+            int sid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_SITE, $"{prefix}_eef_site");
+            if (sid >= 0)
+            {
+                Vector3 eefPos = MjEngineTool.UnityVector3(data->site_xpos + sid * 3);
+                obs.EEFPosition = new float[] { eefPos.x, eefPos.y, eefPos.z };
+                Quaternion eefQuat = MjEngineTool.UnityQuaternionFromMatrix(data->site_xmat + sid * 9);
+                obs.EEFQuaternion = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
+            }
+            else
+            {
+                obs.EEFPosition = new float[3];
+                obs.EEFQuaternion = new float[] { 0, 0, 0, 1 };
+            }
+
+            obs.GripperQPos = new float[] { positions[5], 0f };
         }
 
         private void OnDestroy()
