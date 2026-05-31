@@ -22,6 +22,15 @@ namespace LIBERO.Networking
 
     public class JoyConReceiver : MonoBehaviour
     {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoCreate()
+        {
+            if (FindObjectOfType<JoyConReceiver>() != null) return;
+            var go = new GameObject("JoyConReceiver");
+            DontDestroyOnLoad(go);
+            go.AddComponent<JoyConReceiver>();
+        }
+
         [Header("TCP Settings")]
         public int ListenPort = 5555;
         public bool AutoStart = true;

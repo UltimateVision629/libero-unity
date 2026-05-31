@@ -82,14 +82,18 @@ namespace LIBERO.Core
 
         private void Start()
         {
-            // Auto-create JoyConReceiver if not assigned in scene
+            // Reuse auto-created JoyConReceiver (from Bootstrap) or create one
             if (JoyConInput == null)
             {
-                var jcGo = new GameObject("JoyConReceiver");
-                jcGo.transform.SetParent(transform);
-                JoyConInput = jcGo.AddComponent<JoyConReceiver>();
+                JoyConInput = FindObjectOfType<JoyConReceiver>();
+                if (JoyConInput == null)
+                {
+                    var jcGo = new GameObject("JoyConReceiver");
+                    jcGo.transform.SetParent(transform);
+                    JoyConInput = jcGo.AddComponent<JoyConReceiver>();
+                    Debug.Log("[LiberoEnvironment] Auto-created JoyConReceiver (TCP port 5555)");
+                }
                 UseJoyCon = true;
-                Debug.Log("[LiberoEnvironment] Auto-created JoyConReceiver (TCP port 5555)");
             }
 
             if (!string.IsNullOrEmpty(BDDLFilePath))

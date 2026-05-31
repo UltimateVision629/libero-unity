@@ -7,6 +7,15 @@ namespace LIBERO.Core
 {
     public class MjJoyConController : MonoBehaviour
     {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoCreate()
+        {
+            if (FindObjectOfType<MjJoyConController>() != null) return;
+            var go = new GameObject("MjJoyConController");
+            DontDestroyOnLoad(go);
+            go.AddComponent<MjJoyConController>();
+        }
+
         [Header("References")]
         public JoyConReceiver JoyConInput;
 
