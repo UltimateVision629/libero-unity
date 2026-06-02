@@ -44,6 +44,7 @@ namespace LIBERO.Networking
         private readonly ConcurrentQueue<string> _msgQueue = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> _replyQueue = new ConcurrentQueue<string>();
         private volatile bool _running;
+        private volatile bool _updateReady;
         private readonly object _sendLock = new object();
 
         public bool IsConnected { get; private set; }
@@ -76,6 +77,11 @@ namespace LIBERO.Networking
                 _listener.Start();
                 Debug.Log($"[TrainingServer] Listening on 127.0.0.1:{ListenPort}");
 
+                // Wait for Update() to confirm the main thread is running
+                while (_running && !_updateReady)
+                    Thread.Sleep(50);
+                Debug.Log("[TrainingServer] Main thread ready, accepting clients.");
+
                 while (_running)
                 {
                     if (_client == null || !_client.Connected)
@@ -107,7 +113,7 @@ namespace LIBERO.Networking
                                 _msgQueue.Enqueue(line);
 
                                 // Wait for reply from main thread, then send
-                                string reply = SpinWaitForReply(5000);
+                                string reply = SpinWaitForReply(30000);
                                 if (reply != null)
                                 {
                                     lock (_sendLock)
@@ -161,6 +167,7 @@ namespace LIBERO.Networking
 
         void Update()
         {
+            _updateReady = true;
             while (_msgQueue.TryDequeue(out string msg))
             {
                 string reply = ProcessMessage(msg);
