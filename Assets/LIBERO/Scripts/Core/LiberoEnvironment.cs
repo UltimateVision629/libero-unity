@@ -569,8 +569,27 @@ namespace LIBERO.Core
                 return (new Observation(), 0f, true, null);
             }
 
-            if (Robot != null)
-                Robot.ApplyAction(action);
+            // Dual-arm EEF action: first 7 dims → Robot (right), next 7 dims → Robot2 (left)
+            // Each arm: [dx, dy, dz, dRx, dRy, dRz, gripper] (OSC_POSE format)
+            int dimPerArm = 7;
+            if (action.Length >= 2 * dimPerArm)
+            {
+                float[] action0 = new float[dimPerArm];
+                float[] action1 = new float[dimPerArm];
+                System.Array.Copy(action, 0, action0, 0, dimPerArm);
+                System.Array.Copy(action, dimPerArm, action1, 0, dimPerArm);
+
+                if (Robot != null)
+                    Robot.ApplyAction(action0);
+                if (Robot2 != null)
+                    Robot.ApplyAction(action1);
+            }
+            else
+            {
+                // Fallback: single-arm or legacy format
+                if (Robot != null)
+                    Robot.ApplyAction(action);
+            }
 
             _stepCount++;
 

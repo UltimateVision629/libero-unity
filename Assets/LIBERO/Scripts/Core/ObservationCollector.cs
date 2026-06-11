@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using Mujoco;
 using UnityEngine;
+using Mujoco;
 
 namespace LIBERO.Core
 {
@@ -76,6 +76,8 @@ namespace LIBERO.Core
         [Header("Robot References")]
         public GameObject RobotRoot;
         public ArticulationBody[] JointBodies;
+        public RobotArmController Robot0;
+        public RobotArmController Robot1;
 
         private RenderTexture _agentviewRT;
         private RenderTexture _eyeInHandRT;
@@ -155,22 +157,56 @@ namespace LIBERO.Core
                 EyeInHandCamera.targetTexture = null;
             }
 
-            // Robot proprioception
-            if (robot != null)
+            // Robot proprioception — use passed robot or public fields, fall back to MuJoCo
+            var r0 = robot ?? Robot0;
+            var r1 = Robot1;
+
+            if (r0 != null)
             {
-                robot.GetJointPositions(out float[] jointPositions);
-                robot.GetEEFPose(out Vector3 eefPos, out Quaternion eefQuat);
-                robot.GetGripperState(out float[] gripperQPos);
+                r0.GetJointPositions(out float[] jointPositions);
+                r0.GetEEFPose(out Vector3 eefPos, out Quaternion eefQuat);
+                r0.GetGripperState(out float[] gripperQPos);
 
                 obs.JointPositions = jointPositions;
                 obs.EEFPosition = new float[] { eefPos.x, eefPos.y, eefPos.z };
                 obs.EEFQuaternion = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
                 obs.GripperQPos = gripperQPos;
             }
-            else if (MjScene.InstanceExists)
+
+            if (r1 != null)
             {
-                CollectMuJoCoProprioception(ref obs, "R_", isRobot1: false);
-                CollectMuJoCoProprioception(ref obs, "L_", isRobot1: true);
+                r1.GetJointPositions(out float[] jointPositions1);
+                r1.GetEEFPose(out Vector3 eefPos1, out Quaternion eefQuat1);
+                r1.GetGripperState(out float[] gripperQPos1);
+
+                obs.JointPositions1 = jointPositions1;
+                obs.EEFPosition1 = new float[] { eefPos1.x, eefPos1.y, eefPos1.z };
+                obs.EEFQuaternion1 = new float[] { eefQuat1.x, eefQuat1.y, eefQuat1.z, eefQuat1.w };
+                obs.GripperQPos1 = gripperQPos1;
+            }
+
+            if (r0 == null && r1 == null)
+            {
+                var mjJoy = FindObjectOfType<MjJoyConController>();
+                if (mjJoy != null)
+                {
+                    if (mjJoy.TryGetRobotState(0, out float[] j0, out Vector3 p0, out Quaternion q0))
+                    {
+                        obs.JointPositions = j0;
+                        obs.EEFPosition = new float[] { p0.x, p0.y, p0.z };
+                        obs.EEFQuaternion = new float[] { q0.x, q0.y, q0.z, q0.w };
+                        obs.GripperQPos = new float[] { j0.Length > 0 ? j0[j0.Length - 1] : 0f, 0f };
+                        Debug.Log($"[ObsCollector] Robot0 OK: joints={j0.Length}, eef=({p0.x:F3},{p0.y:F3},{p0.z:F3})");
+                    }
+                    if (mjJoy.TryGetRobotState(1, out float[] j1, out Vector3 p1, out Quaternion q1))
+                    {
+                        obs.JointPositions1 = j1;
+                        obs.EEFPosition1 = new float[] { p1.x, p1.y, p1.z };
+                        obs.EEFQuaternion1 = new float[] { q1.x, q1.y, q1.z, q1.w };
+                        obs.GripperQPos1 = new float[] { j1.Length > 0 ? j1[j1.Length - 1] : 0f, 0f };
+                        Debug.Log($"[ObsCollector] Robot1 OK: joints={j1.Length}, eef=({p1.x:F3},{p1.y:F3},{p1.z:F3})");
+                    }
+                }
             }
 
             // Object states
@@ -186,44 +222,6 @@ namespace LIBERO.Core
             }
 
             return obs;
-        }
-
-        private unsafe void CollectMuJoCoProprioception(ref Observation obs, string prefix, bool isRobot1)
-        {
-            var model = MjScene.Instance.Model;
-            var data = MjScene.Instance.Data;
-
-            string[] jointNames = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw" };
-            float[] positions = new float[6];
-            for (int i = 0; i < 6; i++)
-            {
-                int jid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, $"{prefix}_{jointNames[i]}");
-                positions[i] = jid >= 0 ? (float)data->qpos[jid] : 0f;
-            }
-
-            int sid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_SITE, $"{prefix}_eef_site");
-            Vector3 eefPos = Vector3.zero;
-            Quaternion eefQuat = Quaternion.identity;
-            if (sid >= 0)
-            {
-                eefPos = MjEngineTool.UnityVector3(data->site_xpos + sid * 3);
-                eefQuat = MjEngineTool.UnityQuaternionFromMatrix(data->site_xmat + sid * 9);
-            }
-
-            if (isRobot1)
-            {
-                obs.JointPositions1 = positions;
-                obs.EEFPosition1 = new float[] { eefPos.x, eefPos.y, eefPos.z };
-                obs.EEFQuaternion1 = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
-                obs.GripperQPos1 = new float[] { positions[5], 0f };
-            }
-            else
-            {
-                obs.JointPositions = positions;
-                obs.EEFPosition = new float[] { eefPos.x, eefPos.y, eefPos.z };
-                obs.EEFQuaternion = new float[] { eefQuat.x, eefQuat.y, eefQuat.z, eefQuat.w };
-                obs.GripperQPos = new float[] { positions[5], 0f };
-            }
         }
 
         private void OnDestroy()
