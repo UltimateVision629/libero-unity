@@ -70,8 +70,8 @@ namespace LIBERO.Core
         [Header("Camera Settings")]
         public Camera AgentviewCamera;
         public Camera EyeInHandCamera;
-        public int ImageWidth = 128;
-        public int ImageHeight = 128;
+        public int ImageWidth = 224;
+        public int ImageHeight = 224;
 
         [Header("Robot References")]
         public GameObject RobotRoot;
@@ -79,20 +79,34 @@ namespace LIBERO.Core
         public RobotArmController Robot0;
         public RobotArmController Robot1;
 
-        private RenderTexture _agentviewRT;
-        private RenderTexture _eyeInHandRT;
+        // Two-stage rendering: render at camera's native aspect ratio (16:9),
+        // then letterbox into square output to preserve full horizontal FOV.
+        private RenderTexture _agentviewRenderRT;
+        private RenderTexture _eyeInHandRenderRT;
+        private Texture2D _agentviewRenderTex;
+        private Texture2D _eyeInHandRenderTex;
         private Texture2D _agentviewTex;
         private Texture2D _eyeInHandTex;
+        private int _renderHeight;
 
         private void Awake()
         {
-            _agentviewRT = new RenderTexture(ImageWidth, ImageHeight, 24, RenderTextureFormat.ARGB32);
-            _eyeInHandRT = new RenderTexture(ImageWidth, ImageHeight, 24, RenderTextureFormat.ARGB32);
-            _agentviewTex = new Texture2D(ImageWidth, ImageHeight, TextureFormat.RGB24, false);
-            _eyeInHandTex = new Texture2D(ImageWidth, ImageHeight, TextureFormat.RGB24, false);
-
             if (AgentviewCamera == null)
                 CreateAgentviewCamera();
+
+            // Compute render height from camera aspect ratio (e.g. 224 / 1.778 ≈ 126 for 16:9)
+            float aspect = AgentviewCamera != null ? AgentviewCamera.aspect : 16f / 9f;
+            _renderHeight = Mathf.RoundToInt(ImageWidth / aspect);
+
+            // 16:9 render targets
+            _agentviewRenderRT = new RenderTexture(ImageWidth, _renderHeight, 24, RenderTextureFormat.ARGB32);
+            _agentviewRenderTex = new Texture2D(ImageWidth, _renderHeight, TextureFormat.RGB24, false);
+            _eyeInHandRenderRT = new RenderTexture(ImageWidth, _renderHeight, 24, RenderTextureFormat.ARGB32);
+            _eyeInHandRenderTex = new Texture2D(ImageWidth, _renderHeight, TextureFormat.RGB24, false);
+
+            // Square output textures (letterboxed)
+            _agentviewTex = new Texture2D(ImageWidth, ImageWidth, TextureFormat.RGB24, false);
+            _eyeInHandTex = new Texture2D(ImageWidth, ImageWidth, TextureFormat.RGB24, false);
         }
 
         private void CreateAgentviewCamera()
@@ -126,36 +140,21 @@ namespace LIBERO.Core
         {
             var obs = new Observation
             {
+                // Output is square (letterboxed)
                 ImageWidth = ImageWidth,
-                ImageHeight = ImageHeight,
+                ImageHeight = ImageWidth,
                 ObjectPositions = new Dictionary<string, float[]>(),
                 ObjectQuaternions = new Dictionary<string, float[]>()
             };
 
-            // Capture camera images
+            // Capture camera images: render at 16:9, letterbox to square
             if (AgentviewCamera != null)
-            {
-                AgentviewCamera.targetTexture = _agentviewRT;
-                AgentviewCamera.Render();
-                RenderTexture.active = _agentviewRT;
-                _agentviewTex.ReadPixels(new Rect(0, 0, ImageWidth, ImageHeight), 0, 0);
-                _agentviewTex.Apply();
-                obs.AgentviewImage = _agentviewTex.GetRawTextureData();
-                RenderTexture.active = null;
-                AgentviewCamera.targetTexture = null;
-            }
+                obs.AgentviewImage = CaptureAndLetterbox(AgentviewCamera, _agentviewRenderRT,
+                    _agentviewRenderTex, _agentviewTex);
 
             if (EyeInHandCamera != null)
-            {
-                EyeInHandCamera.targetTexture = _eyeInHandRT;
-                EyeInHandCamera.Render();
-                RenderTexture.active = _eyeInHandRT;
-                _eyeInHandTex.ReadPixels(new Rect(0, 0, ImageWidth, ImageHeight), 0, 0);
-                _eyeInHandTex.Apply();
-                obs.EyeInHandImage = _eyeInHandTex.GetRawTextureData();
-                RenderTexture.active = null;
-                EyeInHandCamera.targetTexture = null;
-            }
+                obs.EyeInHandImage = CaptureAndLetterbox(EyeInHandCamera, _eyeInHandRenderRT,
+                    _eyeInHandRenderTex, _eyeInHandTex);
 
             // Robot proprioception — use passed robot or public fields, fall back to MuJoCo
             var r0 = robot ?? Robot0;
@@ -224,10 +223,51 @@ namespace LIBERO.Core
             return obs;
         }
 
+        /// <summary>
+        /// Render a camera at its native aspect ratio (e.g. 16:9) into a render
+        /// texture, then letterbox the result into a square output texture with
+        /// black bars on top and bottom. Preserves the full horizontal FOV.
+        /// </summary>
+        private byte[] CaptureAndLetterbox(Camera cam, RenderTexture renderRT,
+            Texture2D renderTex, Texture2D outputTex)
+        {
+            // Step 1: Render camera at native aspect ratio
+            var prevTarget = cam.targetTexture;
+            cam.targetTexture = renderRT;
+            cam.Render();
+
+            // Step 2: Read 16:9 pixels from render texture
+            RenderTexture.active = renderRT;
+            renderTex.ReadPixels(new Rect(0, 0, renderRT.width, renderRT.height), 0, 0);
+            renderTex.Apply();
+            RenderTexture.active = null;
+            cam.targetTexture = prevTarget;
+
+            // Step 3: Letterbox into square output (black bars top & bottom)
+            int outSize = outputTex.width;
+            int inWidth = renderRT.width;
+            int inHeight = renderRT.height;
+            int yOffset = (outSize - inHeight) / 2;
+
+            // Fill with black
+            var black = new Color[outSize * outSize];
+            for (int i = 0; i < black.Length; i++)
+                black[i] = Color.black;
+            outputTex.SetPixels(black);
+
+            // Copy rendered content into the center band
+            outputTex.SetPixels(0, yOffset, inWidth, inHeight, renderTex.GetPixels());
+            outputTex.Apply();
+
+            return outputTex.GetRawTextureData();
+        }
+
         private void OnDestroy()
         {
-            if (_agentviewRT != null) _agentviewRT.Release();
-            if (_eyeInHandRT != null) _eyeInHandRT.Release();
+            if (_agentviewRenderRT != null) _agentviewRenderRT.Release();
+            if (_eyeInHandRenderRT != null) _eyeInHandRenderRT.Release();
+            if (_agentviewRenderTex != null) Destroy(_agentviewRenderTex);
+            if (_eyeInHandRenderTex != null) Destroy(_eyeInHandRenderTex);
             if (_agentviewTex != null) Destroy(_agentviewTex);
             if (_eyeInHandTex != null) Destroy(_eyeInHandTex);
         }
