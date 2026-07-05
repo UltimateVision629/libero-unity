@@ -204,6 +204,8 @@ namespace LIBERO.Networking
 
         private string HandleReset()
         {
+            _stepCount = 0;
+
             if (Env != null)
                 return ObsToJson(Env.ResetEnvironment());
 
@@ -220,13 +222,27 @@ namespace LIBERO.Networking
             return ObsToJson(CollectObsFallback());
         }
 
+        private int _stepCount = 0;
+
         private string HandleStep(float[] action)
         {
             if (Env == null)
             {
-                // Stub: no LiberoEnvironment, return current obs with zero reward
+                // MuJoCo-only mode: apply EEF delta action via IK
+                var mjCtrl = FindObjectOfType<MjJoyConController>();
+                if (mjCtrl != null && action.Length >= 14)
+                {
+                    float[] rightAction = new float[7]; System.Array.Copy(action, 0, rightAction, 0, 7);
+                    float[] leftAction  = new float[7]; System.Array.Copy(action, 7, leftAction,  0, 7);
+                    mjCtrl.ApplyEefDelta(0, rightAction);
+                    mjCtrl.ApplyEefDelta(1, leftAction);
+                    // Physics will auto-step on main thread next FixedUpdate
+                }
+
+                _stepCount++;
                 var fallbackObs = CollectObsFallback();
-                return "{\"reward\":0.0000,\"done\":false,\"step\":0,\"success\":false,\"obs\":" + ObsToJson(fallbackObs) + "}";
+                return "{\"reward\":0.0000,\"done\":false,\"step\":" + _stepCount +
+                       ",\"success\":false,\"obs\":" + ObsToJson(fallbackObs) + "}";
             }
 
             var (obs, reward, done, info) = Env.Step(action);

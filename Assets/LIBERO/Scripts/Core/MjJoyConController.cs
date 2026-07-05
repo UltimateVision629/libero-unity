@@ -235,6 +235,167 @@ namespace LIBERO.Core
             }
         }
 
+        // ── Inference: EEF delta → joint delta via finite-difference Jacobian ──
+
+        private unsafe int GetSiteId(string siteName)
+        {
+            return MujocoLib.mj_name2id(MjScene.Instance.Model, (int)MujocoLib.mjtObj.mjOBJ_SITE, siteName);
+        }
+
+        private unsafe Vector3 GetEefPos(int robotIndex)
+        {
+            string siteName = robotIndex == 0 ? "R_eef_site" : "L_eef_site";
+            int sid = GetSiteId(siteName);
+            if (sid < 0) return Vector3.zero;
+            double* sp = MjScene.Instance.Data->site_xpos;
+            return new Vector3((float)sp[sid * 3], (float)sp[sid * 3 + 1], (float)sp[sid * 3 + 2]);
+        }
+
+        private unsafe float[] GetCurrentQ(int robotIndex)
+        {
+            var arm = robotIndex == 0 ? _rArm : _lArm;
+            float[] q = new float[5];
+            string[] order = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
+            var model = MjScene.Instance.Model;
+            var data = MjScene.Instance.Data;
+            for (int i = 0; i < 5; i++)
+            {
+                if (arm.TryGetValue(order[i], out var act) && act.Joint != null)
+                {
+                    int jid = FindJointId(act);
+                    if (jid >= 0) q[i] = (float)data->qpos[model->jnt_qposadr[jid]];
+                }
+            }
+            return q;
+        }
+
+        private unsafe void SetQpos(int robotIndex, float[] q)
+        {
+            var arm = robotIndex == 0 ? _rArm : _lArm;
+            string[] order = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
+            var model = MjScene.Instance.Model;
+            var data = MjScene.Instance.Data;
+            for (int i = 0; i < 5; i++)
+            {
+                if (arm.TryGetValue(order[i], out var act) && act.Joint != null)
+                {
+                    int jid = FindJointId(act);
+                    if (jid >= 0) data->qpos[model->jnt_qposadr[jid]] = q[i];
+                }
+            }
+        }
+
+        private unsafe float[][] ComputeJacobian3x5(int robotIndex, float epsilon = 0.005f)
+        {
+            float[] q0 = GetCurrentQ(robotIndex);
+            Vector3 p0 = GetEefPos(robotIndex);
+            float[][] J = new float[3][] { new float[5], new float[5], new float[5] };
+
+            for (int col = 0; col < 5; col++)
+            {
+                float[] qPerturb = (float[])q0.Clone();
+                qPerturb[col] += epsilon;
+                SetQpos(robotIndex, qPerturb);
+                MujocoLib.mj_kinematics(MjScene.Instance.Model, MjScene.Instance.Data);
+                Vector3 p1 = GetEefPos(robotIndex);
+
+                J[0][col] = (p1.x - p0.x) / epsilon;
+                J[1][col] = (p1.y - p0.y) / epsilon;
+                J[2][col] = (p1.z - p0.z) / epsilon;
+            }
+
+            SetQpos(robotIndex, q0);
+            MujocoLib.mj_kinematics(MjScene.Instance.Model, MjScene.Instance.Data);
+            return J;
+        }
+
+        private float[] DampLeastSquares3x5(float[][] J, Vector3 dx, float lambda = 0.05f)
+        {
+            int m = 3, n = 5;
+            float[,] A = new float[n, n];
+            for (int i = 0; i < n; i++)
+                for (int j = 0; j < n; j++)
+                {
+                    float s = 0f;
+                    for (int k = 0; k < m; k++) s += J[k][i] * J[k][j];
+                    A[i, j] = s + ((i == j) ? lambda * lambda : 0f);
+                }
+
+            float[] b = new float[n];
+            for (int i = 0; i < n; i++)
+            {
+                float s = 0f;
+                for (int k = 0; k < m; k++) s += J[k][i] * dx[k];
+                b[i] = s;
+            }
+
+            // Gaussian elimination
+            for (int col = 0; col < n; col++)
+            {
+                int maxRow = col;
+                float maxVal = Mathf.Abs(A[col, col]);
+                for (int row = col + 1; row < n; row++)
+                    if (Mathf.Abs(A[row, col]) > maxVal) { maxVal = Mathf.Abs(A[row, col]); maxRow = row; }
+                if (maxVal < 1e-10f) continue;
+                if (maxRow != col)
+                {
+                    for (int j = 0; j < n; j++) { float t = A[col, j]; A[col, j] = A[maxRow, j]; A[maxRow, j] = t; }
+                    float tb = b[col]; b[col] = b[maxRow]; b[maxRow] = tb;
+                }
+                float pivot = A[col, col];
+                for (int j = col; j < n; j++) A[col, j] /= pivot;
+                b[col] /= pivot;
+                for (int row = 0; row < n; row++)
+                {
+                    if (row == col) continue;
+                    float factor = A[row, col];
+                    for (int j = col; j < n; j++) A[row, j] -= factor * A[col, j];
+                    b[row] -= factor * b[col];
+                }
+            }
+            return b;
+        }
+
+        /// <summary>Apply EEF delta [dx,dy,dz,dRx,dRy,dRz,grip] to one arm via MuJoCo.</summary>
+        public unsafe void ApplyEefDelta(int robotIndex, float[] action7)
+        {
+            if (action7 == null || action7.Length < 7) return;
+            Vector3 dPos = new Vector3(action7[0], action7[1], action7[2]);
+
+            float[][] J = ComputeJacobian3x5(robotIndex);
+            float[] dq = DampLeastSquares3x5(J, dPos, 0.05f);
+
+            // Clamp and apply joint deltas
+            var arm = robotIndex == 0 ? _rArm : _lArm;
+            string[] order = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
+            var data = MjScene.Instance.Data;
+            var model = MjScene.Instance.Model;
+
+            for (int i = 0; i < 5; i++)
+            {
+                dq[i] = Mathf.Clamp(dq[i], -MaxJointDelta, MaxJointDelta);
+                if (arm.TryGetValue(order[i], out var act) && act.Joint != null)
+                {
+                    int jid = FindJointId(act);
+                    if (jid >= 0)
+                    {
+                        float cur = (float)data->qpos[model->jnt_qposadr[jid]];
+                        data->ctrl[act.MujocoId] = cur + dq[i];
+                        act.Control = cur + dq[i];
+                    }
+                }
+            }
+
+            // Gripper: action 0=open→1=closed. Jaw range [-0.174,1.75].
+            // Positive jaw = open, negative/zero = closed. So invert the mapping.
+            if (arm.TryGetValue("Jaw", out var jaw) && jaw.Joint != null)
+            {
+                float jawTarget = Mathf.Lerp(1.75f, -0.174f, Mathf.Clamp01(action7[6]));
+                data->ctrl[jaw.MujocoId] = jawTarget;
+                jaw.Control = jawTarget;
+            }
+        }
+
         private MjActuator FindLastActuator(Dictionary<string, MjActuator> arm)
         {
             MjActuator result = null;
