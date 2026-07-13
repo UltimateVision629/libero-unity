@@ -78,8 +78,19 @@ namespace LIBERO.Core
 
         private unsafe void OnPreUpdate(object sender, MjStepArgs e)
         {
+            // Warmup: hold arms at home pose so they don't droop at qpos=0
+            if (_warmup < WarmupFrames)
+            {
+                if (_warmup == 0)
+                {
+                    ResetArm(_rArm);
+                    ResetArm(_lArm);
+                }
+                _warmup++;
+                return;
+            }
+
             if (JoyConInput == null || !JoyConInput.HasData) return;
-            if (_warmup < WarmupFrames) { _warmup++; return; }
 
             ProcessArm(JoyConInput.GetRobotPose(0), _rArm, 0);
             ProcessArm(JoyConInput.GetRobotPose(1), _lArm, 1);
