@@ -234,9 +234,16 @@ namespace LIBERO.Networking
                 {
                     float[] rightAction = new float[7]; System.Array.Copy(action, 0, rightAction, 0, 7);
                     float[] leftAction  = new float[7]; System.Array.Copy(action, 7, leftAction,  0, 7);
+                    // DEBUG: log first few steps
+                    if (_stepCount < 3)
+                        Debug.Log($"[TrainingServer] Step {_stepCount}: R_dx={rightAction[0]:F6} R_dz={rightAction[2]:F6} R_grip={rightAction[6]:F4} L_dx={leftAction[0]:F6}");
                     mjCtrl.ApplyEefDelta(0, rightAction);
                     mjCtrl.ApplyEefDelta(1, leftAction);
-                    // Physics will auto-step on main thread next FixedUpdate
+                    // Force a physics step so observation reflects the action
+                    if (MjScene.InstanceExists)
+                    {
+                        unsafe { MujocoLib.mj_step(MjScene.Instance.Model, MjScene.Instance.Data); }
+                    }
                 }
 
                 _stepCount++;

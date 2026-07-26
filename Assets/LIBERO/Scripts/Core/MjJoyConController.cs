@@ -271,9 +271,9 @@ namespace LIBERO.Core
             var data = MjScene.Instance.Data;
             for (int i = 0; i < 5; i++)
             {
-                if (arm.TryGetValue(order[i], out var act) && act.Joint != null)
+                if (arm.TryGetValue(order[i], out var act))
                 {
-                    int jid = FindJointId(act);
+                    int jid = model->actuator_trnid[2 * act.MujocoId + 1];
                     if (jid >= 0) q[i] = (float)data->qpos[model->jnt_qposadr[jid]];
                 }
             }
@@ -288,9 +288,9 @@ namespace LIBERO.Core
             var data = MjScene.Instance.Data;
             for (int i = 0; i < 5; i++)
             {
-                if (arm.TryGetValue(order[i], out var act) && act.Joint != null)
+                if (arm.TryGetValue(order[i], out var act))
                 {
-                    int jid = FindJointId(act);
+                    int jid = model->actuator_trnid[2 * act.MujocoId + 1];
                     if (jid >= 0) data->qpos[model->jnt_qposadr[jid]] = q[i];
                 }
             }
@@ -367,6 +367,7 @@ namespace LIBERO.Core
             return b;
         }
 
+        private int _applyCount = 0;
         /// <summary>Apply EEF delta [dx,dy,dz,dRx,dRy,dRz,grip] to one arm via MuJoCo.</summary>
         public unsafe void ApplyEefDelta(int robotIndex, float[] action7)
         {
@@ -382,18 +383,37 @@ namespace LIBERO.Core
             var data = MjScene.Instance.Data;
             var model = MjScene.Instance.Model;
 
+            bool debugMe = _applyCount < 2;
+            if (debugMe)
+            {
+                Debug.Log($"[IK DEBUG #{_applyCount}] dPos=({dPos.x:F6},{dPos.y:F6},{dPos.z:F6})");
+                for (int ii = 0; ii < 3; ii++)
+                    Debug.Log($"  J row {ii}: [{J[ii][0]:F6}, {J[ii][1]:F6}, {J[ii][2]:F6}, {J[ii][3]:F6}, {J[ii][4]:F6}]");
+                for (int ii = 0; ii < 5; ii++)
+                    Debug.Log($"  dq[{ii}] = {dq[ii]:F6}");
+            }
+            {
+                foreach (var kv in arm)
+                {
+                    var act2 = kv.Value;
+                    int jid1 = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act2.MujocoName);
+                    int jid2 = -1;
+                    if (act2.Joint != null)
+                        jid2 = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act2.Joint.name);
+                    Debug.Log($"[FindJointId] key='{kv.Key}' mujocoName='{act2.MujocoName}' joint.name='{act2.Joint?.name}' jid1={jid1} jid2={jid2}");
+                }
+            }
+
             for (int i = 0; i < 5; i++)
             {
                 dq[i] = Mathf.Clamp(dq[i], -MaxJointDelta, MaxJointDelta);
-                if (arm.TryGetValue(order[i], out var act) && act.Joint != null)
+                if (arm.TryGetValue(order[i], out var act))
                 {
-                    int jid = FindJointId(act);
-                    if (jid >= 0)
-                    {
-                        float cur = (float)data->qpos[model->jnt_qposadr[jid]];
-                        data->ctrl[act.MujocoId] = cur + dq[i];
-                        act.Control = cur + dq[i];
-                    }
+                    // Use actuator_length as current joint position (works for position actuators)
+                    float cur = (float)data->actuator_length[act.MujocoId];
+                    if (debugMe) Debug.Log($"  {order[i]}: cur={cur:F4} dq={dq[i]:F6} newCtrl={cur+dq[i]:F4} mjId={act.MujocoId}");
+                    data->ctrl[act.MujocoId] = cur + dq[i];
+                    act.Control = cur + dq[i];
                 }
             }
 
@@ -405,6 +425,7 @@ namespace LIBERO.Core
                 data->ctrl[jaw.MujocoId] = jawTarget;
                 jaw.Control = jawTarget;
             }
+            _applyCount++;
         }
 
         private MjActuator FindLastActuator(Dictionary<string, MjActuator> arm)
