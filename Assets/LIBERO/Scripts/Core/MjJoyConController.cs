@@ -215,15 +215,13 @@ namespace LIBERO.Core
             }
         }
 
-        private unsafe int FindJointId(MjActuator act)
+        private int FindJointId(MjActuator act)
         {
-            var model = MjScene.Instance.Model;
-            int jid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act.MujocoName);
-            if (jid >= 0) return jid;
-            if (act.Joint != null)
+            // Use prefix-based lookup (mj_name2id broken due to MuJoCo name suffixes)
+            foreach (var kv in _jointPrefixToId)
             {
-                jid = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act.Joint.name);
-                if (jid >= 0) return jid;
+                if (act.MujocoName != null && act.MujocoName.StartsWith(kv.Key))
+                    return kv.Value;
             }
             return -1;
         }
