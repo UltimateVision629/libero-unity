@@ -284,7 +284,35 @@ namespace LIBERO.Networking
             var collector = FindObjectOfType<ObservationCollector>();
             if (collector == null)
                 return new Observation { JointPositions = new float[7], EEFPosition = new float[3], EEFQuaternion = new float[4], GripperQPos = new float[2] };
-            return collector.Collect(null, null);
+
+            var obs = collector.Collect(null, null);
+
+            // Add MuJoCo free-body positions for grasp verification
+            unsafe
+            {
+                if (MjScene.InstanceExists)
+                {
+                    var model = MjScene.Instance.Model;
+                    var data = MjScene.Instance.Data;
+                    string[] knownObjects = { "red_block_1", "green_block_1", "blue_block_1" };
+                    if (obs.ObjectPositions == null)
+                        obs.ObjectPositions = new Dictionary<string, float[]>();
+                    foreach (var name in knownObjects)
+                    {
+                        int bodyId = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_BODY, name);
+                        if (bodyId >= 0)
+                        {
+                            obs.ObjectPositions[name] = new float[] {
+                                (float)data->xpos[3 * bodyId],
+                                (float)data->xpos[3 * bodyId + 1],
+                                (float)data->xpos[3 * bodyId + 2]
+                            };
+                        }
+                    }
+                }
+            }
+
+            return obs;
         }
 
         private string HandleGetTask()

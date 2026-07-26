@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using LIBERO.Networking;
 using Mujoco;
 using UnityEngine;
@@ -29,7 +31,8 @@ namespace LIBERO.Core
         private Dictionary<string, MjActuator> _lArm = new();
         private Dictionary<string, MjActuator> _rArm = new();
         private static readonly string[] _jointTypes = { "Wrist_Pitch", "Wrist_Roll", "Rotation", "Pitch", "Elbow", "Jaw" };
-
+        private static readonly string[] _armJointTypes = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
+        private Dictionary<string, int> _jointPrefixToId = new();
         private int _warmup;
 
         private void Awake()
@@ -44,12 +47,33 @@ namespace LIBERO.Core
                 }
             }
 
-            MjScene.Instance.postInitEvent += OnSceneReady;
+            bool exists = MjScene.InstanceExists;
+            Debug.Log($"[MjJoyCon] Awake: InstanceExists={exists}");
+            if (exists)
+            {
+                FindActuators();
+                Debug.Log($"[MjJoyCon] Awake: jointMap.Count={_jointPrefixToId.Count}");
+                if (_jointPrefixToId.Count == 0)
+                {
+                    Debug.Log("[MjJoyCon] Awake: jointMap empty, subscribing postInitEvent");
+                    MjScene.Instance.postInitEvent += OnSceneReady;
+                }
+                else
+                {
+                    MjScene.Instance.preUpdateEvent += OnPreUpdate;
+                }
+            }
+            else
+            {
+                MjScene.Instance.postInitEvent += OnSceneReady;
+            }
         }
 
         private void OnSceneReady(object sender, MjStepArgs e)
         {
+            Debug.Log("[MjJoyCon] OnSceneReady called");
             FindActuators();
+            Debug.Log($"[MjJoyCon] OnSceneReady: jointMap.Count={_jointPrefixToId.Count}");
             MjScene.Instance.preUpdateEvent += OnPreUpdate;
         }
 
@@ -68,6 +92,48 @@ namespace LIBERO.Core
             }
 
             Debug.Log($"[MjJoyCon] L arm actuators: {_lArm.Count}, R arm: {_rArm.Count}");
+            BuildJointMap();
+        }
+
+        private unsafe void BuildJointMap()
+        {
+            _jointPrefixToId.Clear();
+            var model = MjScene.Instance.Model;
+            if ((IntPtr)model == IntPtr.Zero || model->names == null || model->njnt <= 0)
+            {
+                Debug.LogWarning("[MjJoyCon] BuildJointMap skipped: model not ready");
+                return;
+            }
+            byte* names = (byte*)model->names;
+
+            for (int j = 0; j < model->njnt; j++)
+            {
+                int adr = model->name_jntadr[j];
+                string jname = "";
+                for (int k = 0; k < 80; k++)
+                {
+                    char c = (char)names[adr + k];
+                    if (c == '\0') break;
+                    jname += c;
+                }
+
+                bool matched = false;
+                foreach (var side in new[] { "R_", "L_" })
+                {
+                    if (matched) break;
+                    foreach (var joint in _jointTypes)
+                    {
+                        string key = side + joint;
+                        if (jname.StartsWith(key))
+                        {
+                            _jointPrefixToId[key] = j;
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            Debug.Log($"[MjJoyCon] Joint map built: {_jointPrefixToId.Count} entries");
         }
 
         private void MapActuator(Dictionary<string, MjActuator> dict, string name, MjActuator act)
@@ -253,46 +319,64 @@ namespace LIBERO.Core
             return MujocoLib.mj_name2id(MjScene.Instance.Model, (int)MujocoLib.mjtObj.mjOBJ_SITE, siteName);
         }
 
+        private int _siteIdR = -1, _siteIdL = -1;
+        private unsafe int FindEefSite(string prefix)
+        {
+            var model = MjScene.Instance.Model;
+            byte* names = (byte*)model->names;
+            for (int s = 0; s < model->nsite; s++)
+            {
+                int adr = model->name_siteadr[s];
+                string sname = "";
+                for (int k = 0; k < 80; k++)
+                {
+                    char c = (char)names[adr + k];
+                    if (c == '\0') break;
+                    sname += c;
+                }
+                if (sname.StartsWith(prefix + "eef_site"))
+                    return s;
+            }
+            return -1;
+        }
+
         private unsafe Vector3 GetEefPos(int robotIndex)
         {
-            string siteName = robotIndex == 0 ? "R_eef_site" : "L_eef_site";
-            int sid = GetSiteId(siteName);
-            if (sid < 0) return Vector3.zero;
+            string prefix = robotIndex == 0 ? "R_" : "L_";
+            ref int sidRef = ref (robotIndex == 0 ? ref _siteIdR : ref _siteIdL);
+            if (sidRef < 0)
+                sidRef = FindEefSite(prefix);
+            if (sidRef < 0) return Vector3.zero;
             double* sp = MjScene.Instance.Data->site_xpos;
-            return new Vector3((float)sp[sid * 3], (float)sp[sid * 3 + 1], (float)sp[sid * 3 + 2]);
+            return new Vector3((float)sp[sidRef * 3], (float)sp[sidRef * 3 + 1], (float)sp[sidRef * 3 + 2]);
         }
 
         private unsafe float[] GetCurrentQ(int robotIndex)
         {
             var arm = robotIndex == 0 ? _rArm : _lArm;
             float[] q = new float[5];
-            string[] order = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
+            string prefix = robotIndex == 0 ? "R_" : "L_";
             var model = MjScene.Instance.Model;
             var data = MjScene.Instance.Data;
             for (int i = 0; i < 5; i++)
             {
-                if (arm.TryGetValue(order[i], out var act))
-                {
-                    int jid = model->actuator_trnid[2 * act.MujocoId + 1];
-                    if (jid >= 0) q[i] = (float)data->qpos[model->jnt_qposadr[jid]];
-                }
+                string key = prefix + _armJointTypes[i];
+                if (_jointPrefixToId.TryGetValue(key, out int jid))
+                    q[i] = (float)data->qpos[model->jnt_qposadr[jid]];
             }
             return q;
         }
 
         private unsafe void SetQpos(int robotIndex, float[] q)
         {
-            var arm = robotIndex == 0 ? _rArm : _lArm;
-            string[] order = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
+            string prefix = robotIndex == 0 ? "R_" : "L_";
             var model = MjScene.Instance.Model;
             var data = MjScene.Instance.Data;
             for (int i = 0; i < 5; i++)
             {
-                if (arm.TryGetValue(order[i], out var act))
-                {
-                    int jid = model->actuator_trnid[2 * act.MujocoId + 1];
-                    if (jid >= 0) data->qpos[model->jnt_qposadr[jid]] = q[i];
-                }
+                string key = prefix + _armJointTypes[i];
+                if (_jointPrefixToId.TryGetValue(key, out int jid))
+                    data->qpos[model->jnt_qposadr[jid]] = q[i];
             }
         }
 
@@ -367,7 +451,6 @@ namespace LIBERO.Core
             return b;
         }
 
-        private int _applyCount = 0;
         /// <summary>Apply EEF delta [dx,dy,dz,dRx,dRy,dRz,grip] to one arm via MuJoCo.</summary>
         public unsafe void ApplyEefDelta(int robotIndex, float[] action7)
         {
@@ -377,55 +460,28 @@ namespace LIBERO.Core
             float[][] J = ComputeJacobian3x5(robotIndex);
             float[] dq = DampLeastSquares3x5(J, dPos, 0.05f);
 
-            // Clamp and apply joint deltas
             var arm = robotIndex == 0 ? _rArm : _lArm;
             string[] order = { "Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll" };
             var data = MjScene.Instance.Data;
-            var model = MjScene.Instance.Model;
-
-            bool debugMe = _applyCount < 2;
-            if (debugMe)
-            {
-                Debug.Log($"[IK DEBUG #{_applyCount}] dPos=({dPos.x:F6},{dPos.y:F6},{dPos.z:F6})");
-                for (int ii = 0; ii < 3; ii++)
-                    Debug.Log($"  J row {ii}: [{J[ii][0]:F6}, {J[ii][1]:F6}, {J[ii][2]:F6}, {J[ii][3]:F6}, {J[ii][4]:F6}]");
-                for (int ii = 0; ii < 5; ii++)
-                    Debug.Log($"  dq[{ii}] = {dq[ii]:F6}");
-            }
-            {
-                foreach (var kv in arm)
-                {
-                    var act2 = kv.Value;
-                    int jid1 = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act2.MujocoName);
-                    int jid2 = -1;
-                    if (act2.Joint != null)
-                        jid2 = MujocoLib.mj_name2id(model, (int)MujocoLib.mjtObj.mjOBJ_JOINT, act2.Joint.name);
-                    Debug.Log($"[FindJointId] key='{kv.Key}' mujocoName='{act2.MujocoName}' joint.name='{act2.Joint?.name}' jid1={jid1} jid2={jid2}");
-                }
-            }
 
             for (int i = 0; i < 5; i++)
             {
                 dq[i] = Mathf.Clamp(dq[i], -MaxJointDelta, MaxJointDelta);
                 if (arm.TryGetValue(order[i], out var act))
                 {
-                    // Use actuator_length as current joint position (works for position actuators)
                     float cur = (float)data->actuator_length[act.MujocoId];
-                    if (debugMe) Debug.Log($"  {order[i]}: cur={cur:F4} dq={dq[i]:F6} newCtrl={cur+dq[i]:F4} mjId={act.MujocoId}");
                     data->ctrl[act.MujocoId] = cur + dq[i];
                     act.Control = cur + dq[i];
                 }
             }
 
             // Gripper: action 0=open→1=closed. Jaw range [-0.174,1.75].
-            // Positive jaw = open, negative/zero = closed. So invert the mapping.
             if (arm.TryGetValue("Jaw", out var jaw) && jaw.Joint != null)
             {
                 float jawTarget = Mathf.Lerp(1.75f, -0.174f, Mathf.Clamp01(action7[6]));
                 data->ctrl[jaw.MujocoId] = jawTarget;
                 jaw.Control = jawTarget;
             }
-            _applyCount++;
         }
 
         private MjActuator FindLastActuator(Dictionary<string, MjActuator> arm)
