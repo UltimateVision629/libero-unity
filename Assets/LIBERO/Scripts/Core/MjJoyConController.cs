@@ -284,22 +284,9 @@ namespace LIBERO.Core
                         joints[idx] = (float)data->qpos[MjScene.Instance.Model->jnt_qposadr[jid]];
                 }
 
-                string prefix = robotIndex == 0 ? "R_" : "L_";
-                var siteGo = GameObject.Find($"{prefix}_eef_site");
-                if (siteGo != null)
-                {
-                    eefPos = siteGo.transform.position;
-                    eefQuat = siteGo.transform.rotation;
-                }
-                else
-                {
-                    var lastAct = FindLastActuator(arm);
-                    if (lastAct != null && lastAct.Joint != null)
-                    {
-                        eefPos = lastAct.Joint.transform.position;
-                        eefQuat = lastAct.Joint.transform.rotation;
-                    }
-                }
+                // Read EEF directly from MuJoCo site_xpos (GameObject transform may lag)
+                eefPos = GetEefPos(robotIndex);
+                eefQuat = Quaternion.identity;  // orientation not needed for position-only IK
 
                 return true;
             }

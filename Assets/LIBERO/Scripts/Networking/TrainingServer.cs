@@ -239,10 +239,13 @@ namespace LIBERO.Networking
                         Debug.Log($"[TrainingServer] Step {_stepCount}: R_dx={rightAction[0]:F6} R_dz={rightAction[2]:F6} R_grip={rightAction[6]:F4} L_dx={leftAction[0]:F6}");
                     mjCtrl.ApplyEefDelta(0, rightAction);
                     mjCtrl.ApplyEefDelta(1, leftAction);
-                    // Force a physics step so observation reflects the action
+                    // Step physics enough times for actuators to track the target
                     if (MjScene.InstanceExists)
                     {
-                        unsafe { MujocoLib.mj_step(MjScene.Instance.Model, MjScene.Instance.Data); }
+                        unsafe {
+                            for (int s = 0; s < 10; s++)
+                                MujocoLib.mj_step(MjScene.Instance.Model, MjScene.Instance.Data);
+                        }
                     }
                 }
 
