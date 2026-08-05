@@ -122,40 +122,75 @@ def _target_pose_to_world(target_pose):
 def _world_to_target_pose(world_pos, world_quat, prev_target_pose=None):
     """Convert world-frame position + quaternion back to Joy-Con target_pose.
 
-    Inverse of _target_pose_to_world().  The world quaternion is extrinsic Z-X-Z:
-        world_quat = Rz(yaw_r) * Rx(pitch_r) * Rz(-roll_r)
+    Inverse of _target_pose_to_world().  The world pose is structurally
+        world_pos  = Rz(yaw)  · (x_r, y_local, z_r),   y_local = 0.01
+        world_quat = Rz(yaw)  · Rx(pitch) · Rz(-roll)  (extrinsic Z-X-Z)
 
-    CRITICAL: scipy uses UPPERCASE for extrinsic rotations.
-    'ZXZ' (uppercase, extrinsic): R = Rz(euler[0]) * Rx(euler[1]) * Rz(euler[2])
-    Our world_quat = Rz(yaw_r) * Rx(pitch_r) * Rz(-roll_r) (extrinsic Z-X-Z):
-      euler[0] = yaw_r,  euler[1] = pitch_r,  euler[2] = -roll_r
+    The recorded trajectory ALWAYS lies on the "local y = 0.01" cylinder —
+    Joy-Con targets are built with y = 0.01 fixed, and the world deltas are
+    exact differences of such poses.  So yaw can be solved EXACTLY from the
+    position constraint instead of the numerically ill-conditioned Z-X-Z
+    quaternion decomposition:
 
-    Z-X-Z decomposition is NOT unique: (α,β,γ) and (α+π,-β,γ+π) produce the
-    same rotation matrix.  We use prev_target_pose to pick the correct branch
-    and to wrap angles for temporal continuity.
+        wy·cosψ - wx·sinψ = r·sin(θ - ψ) = 0.01,   r = hypot(wx,wy), θ = atan2(wy,wx)
+        → ψ = θ - asin(0.01/r)  or  θ - π + asin(0.01/r)
 
-    Note: scipy has no `extrinsic` keyword arg — case alone controls extrinsic vs intrinsic.
+    The Z-X-Z decomposition degenerates whenever pitch ≈ 0 (gimbal lock —
+    SO100's wrist pitch is naturally ~0 during grasping, which used to smear
+    noise into yaw/roll and destroy the position).  The position constraint
+    has NO such degeneracy.  pitch/roll are then extracted from
+    Rz(-yaw)·world_quat = Rx(pitch)·Rz(-roll), a two-angle decomposition
+    that is well-conditioned everywhere (valid away from roll≈π / pitch≈π,
+    never reached by SO100 joint limits).
+
+    The old scipy Z-X-Z path is kept only as a fallback for the degenerate
+    case world near the origin (r ≈ 0), where yaw is unconstrained by
+    position.
 
     Args:
         world_pos: np.ndarray[3] — world-frame position
         world_quat: np.ndarray[4] — world-frame quaternion [x, y, z, w]
-        prev_target_pose: optional [x_r, _, z_r, roll_r, pitch_r, yaw_r] for branch selection
+        prev_target_pose: optional [x_r, _, z_r, roll_r, pitch_r, yaw_r]
+            for candidate selection (the constraint has two solutions ≈ π apart)
 
     Returns:
         target_pose: [x_r, 0.0, z_r, roll_r, pitch_r, yaw_r] — raw Joy-Con format
     """
     world_x, world_y, world_z = world_pos
+    y_local = 0.01  # Joy-Con cylindrical frame: local y is always 0.01
 
-    # Decompose world quaternion as extrinsic Z-X-Z
+    # ── yaw from position constraint (well-conditioned, no gimbal lock) ──
+    r = math.hypot(world_x, world_y)
+    if r > abs(y_local) + 1e-12:
+        theta = math.atan2(world_y, world_x)
+        delta = math.asin(min(1.0, y_local / r))
+        cand1 = theta - delta
+        cand2 = theta - math.pi + delta  # ≈ π away; continuity picks the right one
+        if prev_target_pose is None:
+            yaw_r = cand1
+        else:
+            prev_yaw = prev_target_pose[5]
+            yaw_r = min(cand1, cand2, key=lambda c: abs(
+                ((c - prev_yaw + math.pi) % (2 * math.pi)) - math.pi))
+
+        # ── pitch/roll from Rz(-yaw)·world_quat = Rx(pitch)·Rz(-roll) ──
+        # q_M = [sin(p/2)cos(r/2), sin(p/2)sin(r/2), -cos(p/2)sin(r/2), cos(p/2)cos(r/2)]
+        q_base_inv = _euler_zxy_to_quat(0.0, 0.0, -yaw_r)
+        qx, qy, qz, qw = quat_multiply(q_base_inv, world_quat)
+        pitch_r = 2.0 * math.atan2(qx, qw)
+        roll_r = -2.0 * math.atan2(qz, qw)
+
+        cos_y, sin_y = math.cos(yaw_r), math.sin(yaw_r)
+        x_r = world_x * cos_y + world_y * sin_y
+        return [x_r, 0.0, world_z, roll_r, pitch_r, yaw_r]
+
+    # ── Degenerate fallback (world near origin): Z-X-Z decomposition ──
     euler = R.from_quat(world_quat).as_euler('ZXZ', degrees=False)
     yaw_candidate = float(euler[0])
     pitch_candidate = float(euler[1])
     roll_candidate = float(-euler[2])  # euler[2] = -roll_r
 
     # Branch disambiguation: (α, β, γ) vs (α+π, -β, γ+π) produce same rotation.
-    # Additionally, when pitch ≈ 0 (gimbal lock), only yaw-roll is determined —
-    # scipy forces euler[2]=0 and puts everything in euler[0].
-    # We use prev_target_pose to split the total Z rotation between yaw and roll.
     if prev_target_pose is not None:
         prev_roll, prev_pitch, prev_yaw = prev_target_pose[3], prev_target_pose[4], prev_target_pose[5]
 
@@ -176,29 +211,24 @@ def _world_to_target_pose(world_pos, world_quat, prev_target_pose=None):
                         best_dist = dist
                         best = (yy, p, rr)
 
-        # Gimbal-lock fallback: if the best match is still far from prev (pitch ≈ 0 case),
-        # scipy may have forced euler[2]=0.  Only total_z = yaw - roll is well-defined.
-        # Split the total Z rotation to keep both yaw and roll close to their prev values.
+        # Gimbal-lock fallback: pitch ≈ 0 → only total_z = yaw - roll is
+        # well-defined.  Split the total Z rotation to keep yaw/roll continuous.
         yaw_r, pitch_r, roll_r = best
-        if abs(pitch_r) < 1e-6 and abs(prev_pitch) < 1e-6:
-            total_z = yaw_r - roll_r  # the only well-defined quantity
+        if abs(pitch_r) < 0.05 and abs(prev_pitch) < 0.05:
+            total_z = yaw_r - roll_r
             prev_diff = prev_yaw - prev_roll
             delta = total_z - prev_diff
             delta_wrapped = (delta + math.pi) % (2*math.pi) - math.pi
             total_z = prev_diff + delta_wrapped
-            # Split evenly: keep both yaw and roll close to previous
             yaw_r = prev_yaw + 0.5 * delta_wrapped
             roll_r = prev_roll - 0.5 * delta_wrapped
     else:
         yaw_r, pitch_r, roll_r = yaw_candidate, pitch_candidate, roll_candidate
 
-    # Position: rotate world pos back to base frame
     cos_y, sin_y = math.cos(yaw_r), math.sin(yaw_r)
     x_r = world_x * cos_y + world_y * sin_y
-    z_r = world_z
-    # y_r = -world_x*sin_y + world_y*cos_y should ≈ 0.01 by construction; not needed
 
-    return [x_r, 0.0, z_r, roll_r, pitch_r, yaw_r]
+    return [x_r, 0.0, world_z, roll_r, pitch_r, yaw_r]
 
 
 # ── Robot command (COPIED from collect_datasets.DemoCollector) ────────────
@@ -294,6 +324,12 @@ def _go_home(joycon, robot):
 
     Same logic as collect_datasets._go_home(): uses _compute_robot_command
     to get joints, sends via TCP :5555.
+
+    Returns:
+        home_warm_q: [q_r, q_l] — the home IK solutions, to be used as the
+        IK warm-start of the replay loop (collect_datasets._go_home() keeps
+        these in self.current_arm_q_*; dropping them here can converge the
+        first replay frame to a different IK branch).
     """
     home_target = [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0]
 
@@ -313,6 +349,7 @@ def _go_home(joycon, robot):
         joycon.send(j_home[0], g_home[0], j_home[1], g_home[1])
     time.sleep(0.5)
     print("[Home] Arms sent to home pose.")
+    return warm_q
 
 
 # ── Main replay loop ──────────────────────────────────────────────────────
@@ -320,7 +357,7 @@ def _go_home(joycon, robot):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--traj",
-        default=r"C:\vla\my\DatasetsCollector\demos\拿起红色方块\episode_0001_拿起红色方块_20260611_200042_success.npz")
+        default=r"C:\vla\my\DatasetsCollector\demos\episode_0001_pick_up_the_red_block_20260728_220541_success.npz")
     parser.add_argument("--fps", type=float, default=50)
     parser.add_argument("--warmup", type=float, default=3.0)
     args = parser.parse_args()
@@ -343,17 +380,21 @@ def main():
 
     obs.reset()
     time.sleep(1.0)
-    _go_home(joycon, robot)
+    arm_q_warm = _go_home(joycon, robot)  # home IK solutions as warm-start (matches collect)
     init = obs.get_obs()
     print(f"[Init] R EEF: {init['robot0_eef_pos']}")
 
     # ── Per-arm virtual Joy-Con state ──────────────────────────────────
     # target_pose = [x_r, 0.0, z_r, roll_r, pitch_r, yaw_r] — same format as Joy-Con get_control()
-    target_pose = [
-        [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0],  # right
-        [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0],  # left
-    ]
-    arm_q_warm = [_INIT_ARM_Q.copy(), _INIT_ARM_Q.copy()]  # IK warm-start (matches collect)
+    home_tp = [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0]
+    target_pose = [home_tp.copy(), home_tp.copy()]
+    # World-frame pose tracking: accumulated in float directly from the
+    # action deltas.  NOT rebuilt from target_pose — the gimbal-lock yaw/roll
+    # approximation in _world_to_target_pose used to round-trip into position
+    # error through target_pose → _target_pose_to_world → delta.
+    wp_home, wq_home = _target_pose_to_world(home_tp)
+    world_pos = [wp_home.copy(), wp_home.copy()]
+    world_quat = [wq_home.copy(), wq_home.copy()]
     ik_fail_count = [0, 0]
 
     # Last successful joint command per arm (initialized empty; sent after first IK success)
@@ -373,25 +414,21 @@ def main():
             drot = act[base+3:base+6].astype(float)     # world-frame axis-angle rotation delta
             gripper_state = float(act[base+6])           # raw gripper (0=open, 1=closed) — NO inversion
 
-            # ── Step 1: current target_pose → world pose ──────────────
-            world_pos, world_quat = _target_pose_to_world(target_pose[arm_idx])
-
-            # ── Step 2: apply world-frame delta ───────────────────────
-            world_pos_new = world_pos + dpos
+            # ── Step 1: apply world-frame delta to tracked pose ───────
+            world_pos[arm_idx] = world_pos[arm_idx] + dpos
 
             # Rotation delta: axis-angle → quaternion → apply (world-frame left-multiply)
             if np.linalg.norm(drot) > 1e-10:
                 q_delta = R.from_rotvec(drot).as_quat()  # scipy: [x, y, z, w]
-                world_quat_new = quat_multiply(q_delta, world_quat)
-            else:
-                world_quat_new = world_quat
+                world_quat[arm_idx] = quat_multiply(q_delta, world_quat[arm_idx])
 
-            # ── Step 3: world pose → new target_pose ─────────────────
+            # ── Step 2: world pose → target_pose (IK input only) ─────
             # Pass previous target_pose for Z-X-Z branch disambiguation
             target_pose[arm_idx] = _world_to_target_pose(
-                world_pos_new, world_quat_new, prev_target_pose=target_pose[arm_idx])
+                world_pos[arm_idx], world_quat[arm_idx],
+                prev_target_pose=target_pose[arm_idx])
 
-            # ── Step 4: compute robot command (EXACT same as collect) ─
+            # ── Step 3: compute robot command (EXACT same as collect) ─
             joints, grip, new_q = _compute_robot_command(
                 target_pose[arm_idx].copy(), gripper_state, arm_q_warm[arm_idx], robot)
 
