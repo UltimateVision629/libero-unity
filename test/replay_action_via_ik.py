@@ -1,35 +1,90 @@
 """
-Replay demo actions using lerobot_IK — EXACT same logic as collect_datasets.py.
+Replay demo actions using the pluggable IK backend — EXACT same logic as collect_datasets.py.
 
 Architecture: maintains a virtual Joy-Con "target_pose" state per arm,
 accumulates world-frame EEF deltas from the recorded action, and feeds the
-reconstructed target_pose through _compute_robot_command() (copied from
-collect_datasets.py) for pixel-identical IK → joints.
+reconstructed target_pose through the selected IK backend (arm_ik.py) for
+joints → JoyConReceiver :5555.
 
-This eliminates the 4 critical misalignments in the old FK-delta approach:
-  1. Base yaw now updates from world-frame orientation decomposition (Z-X-Z)
-  2. Euler angles use extrinsic Z-X-Z + the same pitch/roll transforms as collect
-  3. Gripper is NOT inverted (raw value, 0=open 1=closed)
-  4. target_pose state mirrors Joy-Con output, matching sender-side semantics
+IK backends (--ik-backend):
+  lerobot  — C ext lerobot_IK (original; kinematic model ≠ MuJoCo, 30-50cm off)
+  mujoco   — MuJoCo Python IK on the SAME model as Unity (default)
+  placo    — stub (placo not installed / frame conversion not wired)
+
+Target modes (--ik-target):
+  pose  — reconstructed Joy-Con target_pose → solve() (all backends)
+  eef   — recorded MuJoCo EEF observation → solve_eef_pos() (mujoco only;
+          auto-fallback to pose when observations are stale, e.g. June demos)
+
+Note on fast path (eef): the recorded robot*_eef_pos is in MuJoCo WORLD
+coordinates; the arm IK solves in the arm BASE frame, so each frame converts
+eef_arm = (rel_y, -rel_x, rel_z) with rel = obs_eef - base_pos (the base is
+rotated Rz(+90°) in the XML: world_rel = Rz(90°) · eef_arm).
 
 Usage: python replay_action_via_ik.py [--traj PATH] [--fps FPS] [--warmup SEC]
+                                     [--ik-backend {lerobot,mujoco,placo}]
+                                     [--ik-target {pose,eef,auto}]
+                                     [--dir DIR] [--filter SUBSTR] [--quiet]
 """
-import argparse, io, json, math, os, socket, sys, time
+import argparse, io, json, math, os, socket, sys, time, traceback, warnings
 from pathlib import Path
 import numpy as np
 
-sys.path.insert(0, r"C:\vla\lerobot-kinematics")
-from lerobot_kinematics import lerobot_IK, get_robot
+sys.path.insert(0, str(Path(__file__).parent))  # arm_ik.py, mujoco_ik.py
 from scipy.spatial.transform import Rotation as R
 
+from arm_ik import create_ik, INIT_ARM_Q, CONTROL_GLIMIT, _SO100_HOME_XYZ
 
-# ── Constants (matching collect_datasets.py) ──────────────────────────────
-CONTROL_GLIMIT = [
-    [0.125, -0.4, 0.046, -3.1, -1.5, -1.5],
-    [0.380, 0.4, 0.23, 3.1, 1.5, 1.5],
-]
-_SO100_HOME_XYZ = [0.111, 0.0, 0.098]
-_INIT_ARM_Q = np.array([-3.14, 3.14, 0.0, -1.57])
+
+# ── Backward-compat aliases (validate_replay_offline.py / run_inference.py) ─
+_INIT_ARM_Q = INIT_ARM_Q
+
+# ── MuJoCo arm bases (for the eef fast path: obs world → arm frame) ────────
+_RIGHT_BASE = np.array([-0.70, -0.20, -0.075])
+_LEFT_BASE = np.array([-0.70, 0.20, -0.075])
+
+
+# ── Gripper mapping ────────────────────────────────────────────────────────
+# Raw gripper (joyconrobotics): 1 = open, 0 = close.
+# Unity MjJoyConController.SetJoint() writes the value straight into the
+# MuJoCo Jaw position actuator ctrl, whose range is the joint range
+# [-0.174, 1.75] rad.  Sending 0/1 directly means "close" puts the jaw at
+# 1.0 rad (almost fully OPEN) — the gripper can never close.  Map to radians
+# with the same Lerp as TrainingServer.ApplyEefDelta (1.75 → -0.174).
+JAW_OPEN_RAD = 1.75
+JAW_CLOSE_RAD = -0.174
+
+
+def gripper_to_jaw(gripper: float) -> float:
+    """Map raw gripper (1=open, 0=close) to Jaw actuator radians.
+
+    joyconrobotics: 0=close, 1=open.  Lerp keeps the direction consistent:
+      gripper=0 (close) → -0.174 rad (Jaw 闭合位)
+      gripper=1 (open)  → 1.75 rad  (Jaw 全开位)
+    """
+    return JAW_CLOSE_RAD + (JAW_OPEN_RAD - JAW_CLOSE_RAD) * gripper
+
+
+def _obs_joints_to_arm(obs_joints: np.ndarray) -> np.ndarray:
+    """Reorder Unity obs joints [Wrist_Pitch, Wrist_Roll, Rotation, Pitch,
+    Elbow, Jaw] → arm order [Rotation, Pitch, Elbow, Wrist_Pitch, Wrist_Roll]."""
+    return np.array([obs_joints[2], obs_joints[3], obs_joints[4],
+                     obs_joints[0], obs_joints[1]], dtype=np.float64)
+
+
+def _obs_eef_to_arm(obs_eef: np.ndarray, base: np.ndarray) -> np.ndarray:
+    """MuJoCo world EEF → arm base frame (base rotated Rz(+90°) in the XML:
+    world_rel = Rz(90°)·eef_arm  →  eef_arm = (rel_y, -rel_x, rel_z))."""
+    rel = np.asarray(obs_eef, dtype=np.float64) - base
+    return np.array([rel[1], -rel[0], rel[2]])
+
+
+def _eef_obs_valid(obs_eef: np.ndarray, base: np.ndarray) -> bool:
+    """Sanity check: recorded EEF is a plausible reach from the arm base
+    (June demos have stale/garbage eef — those must use the pose path)."""
+    rel = np.asarray(obs_eef, dtype=np.float64) - base
+    d = np.linalg.norm(rel)
+    return 0.10 < d < 0.65
 
 
 # ── Quaternion math (Unity convention: [x, y, z, w]) ──────────────────────
@@ -231,46 +286,6 @@ def _world_to_target_pose(world_pos, world_quat, prev_target_pose=None):
     return [x_r, 0.0, world_z, roll_r, pitch_r, yaw_r]
 
 
-# ── Robot command (COPIED from collect_datasets.DemoCollector) ────────────
-
-def _compute_robot_command(target_pose, gripper_state, current_arm_q, robot):
-    """Robot action processor: Joy-Con target → IK → joint angles.
-
-    EXACT copy of collect_datasets.DemoCollector._compute_robot_command(),
-    with warm-start state made explicit via parameters.
-
-    Args:
-        target_pose: [x_r, _, z_r, roll_r, pitch_r, yaw_r] — raw Joy-Con values
-        gripper_state: raw gripper value (0=open, 1=closed)
-        current_arm_q: np.ndarray[4] — IK warm-start (previous IK solution)
-        robot: lerobot robot object
-
-    Returns:
-        (joint_angles_6d, gripper, new_arm_q) or (None, gripper, current_arm_q) on IK failure
-        joint_angles_6d: [yaw, pitch, elbow, wrist_pitch, wrist_roll, gripper]
-    """
-    # Clamp to workspace limits
-    for i in range(6):
-        target_pose[i] = max(CONTROL_GLIMIT[0][i], min(CONTROL_GLIMIT[1][i], target_pose[i]))
-
-    x_r, _, z_r, roll_r, pitch_r, yaw_r = target_pose
-    y_r = 0.01  # fixed lateral offset
-
-    # Transformations matching lerobot_joycon_gpos_real.py
-    pitch_r = -pitch_r
-    roll_r = roll_r - math.pi / 2
-
-    right_target_gpos = np.array([x_r, y_r, z_r, roll_r, pitch_r, 0.0])
-    qpos_inv, ik_success = lerobot_IK(current_arm_q, right_target_gpos, robot=robot)
-
-    if ik_success:
-        target_qpos = np.concatenate(([yaw_r], qpos_inv[:4], [gripper_state]))
-        new_arm_q = target_qpos[1:5].copy()  # IK warm-start for next frame
-        return target_qpos, gripper_state, new_arm_q
-    else:
-        return None, gripper_state, current_arm_q
-
-
 # ── Networking ─────────────────────────────────────────────────────────────
 
 class JoyConClient:
@@ -319,15 +334,15 @@ class ObsClient:
 
 # ── Home pose ──────────────────────────────────────────────────────────────
 
-def _go_home(joycon, robot):
+def _go_home(joycon, ik):
     """Send both arms to the naturally-bent ready pose via JoyConReceiver.
 
-    Same logic as collect_datasets._go_home(): uses _compute_robot_command
-    to get joints, sends via TCP :5555.
+    Same logic as collect_datasets._go_home(): runs IK for a home target pose,
+    sends joints via TCP :5555.
 
     Returns:
-        home_warm_q: [q_r, q_l] — the home IK solutions, to be used as the
-        IK warm-start of the replay loop (collect_datasets._go_home() keeps
+        home_warm_q: [q_r, q_l] — the home IK solutions (5-DOF), to be used as
+        the IK warm-start of the replay loop (collect_datasets._go_home() keeps
         these in self.current_arm_q_*; dropping them here can converge the
         first replay frame to a different IK branch).
     """
@@ -335,14 +350,15 @@ def _go_home(joycon, robot):
 
     j_home = [None, None]
     g_home = [0.0, 0.0]
-    warm_q = [_INIT_ARM_Q.copy(), _INIT_ARM_Q.copy()]
+    warm_q = [INIT_ARM_Q.copy(), INIT_ARM_Q.copy()]
 
     for arm_idx in range(2):
-        joints, grip, new_q = _compute_robot_command(
-            home_target.copy(), 0.0, warm_q[arm_idx], robot)
+        ik[arm_idx].reset_warm()  # per-episode warm reset (matches collect)
+        joints, new_q = ik[arm_idx].solve(home_target.copy(), 0.0, warm_q[arm_idx])
         if joints is not None:
-            j_home[arm_idx] = joints
-            g_home[arm_idx] = grip
+            # Home pose: jaw closed (-0.174) — same as collect's gripper 0
+            j_home[arm_idx] = np.concatenate((joints, [gripper_to_jaw(0.0)]))
+            g_home[arm_idx] = 0.0
             warm_q[arm_idx] = new_q
 
     if j_home[0] is not None and j_home[1] is not None:
@@ -352,57 +368,88 @@ def _go_home(joycon, robot):
     return warm_q
 
 
-# ── Main replay loop ──────────────────────────────────────────────────────
+# ── Per-episode helpers ───────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--traj",
-        default=r"C:\vla\my\DatasetsCollector\demos\episode_0001_pick_up_the_red_block_20260728_220541_success.npz")
-    parser.add_argument("--fps", type=float, default=50)
-    parser.add_argument("--warmup", type=float, default=3.0)
-    args = parser.parse_args()
+def _compute_eef_eligibility(data, ik, ik_target):
+    """Per-arm eef fast-path eligibility for ONE .npz (file-specific).
 
-    data = np.load(args.traj, allow_pickle=True)
+    Requires valid recorded EEF observations (July+ demos; June demos have
+    stale zeros) AND the mujoco backend.
+
+    Returns:
+        (eef_ok: [bool, bool], obs_eef: [np.ndarray, np.ndarray],
+         obs_joints: [np.ndarray, np.ndarray], bases: [np.ndarray, np.ndarray])
+    """
+    T = data["action"].shape[0]
+    obs_eef = [np.asarray(data["robot0_eef_pos"]), np.asarray(data["robot1_eef_pos"])]
+    obs_joints = [np.asarray(data["robot0_joint_pos"]), np.asarray(data["robot1_joint_pos"])]
+    bases = [_RIGHT_BASE, _LEFT_BASE]
+    eef_ok = [False, False]
+    if ik_target in ("auto", "eef") and ik[0].name == "mujoco":
+        for a in range(2):
+            n = obs_eef[a].shape[0]
+            if n < T:
+                continue
+            valid_frac = np.mean([_eef_obs_valid(obs_eef[a][t], bases[a]) for t in range(0, n, 20)])
+            joints_valid = not np.all(np.abs(obs_joints[a]) < 1e-6)
+            if valid_frac > 0.8 and joints_valid:
+                eef_ok[a] = True
+    return eef_ok, obs_eef, obs_joints, bases
+
+
+def _npz_success(data):
+    """Read the 'success' flag from a .npz; return None if absent."""
+    if "success" in data.files:
+        return bool(np.asarray(data["success"]).item())
+    return None
+
+
+def replay_episode(joycon, obs, ik, data, fps, ik_target, name="?", quiet=False):
+    """Replay ONE episode through Unity: reset → home → replay loop.
+
+    All per-episode state is local, so repeated calls are clean.
+    TCP sockets and IK instances are owned by the CALLER.
+
+    Args:
+        name: display name for this episode (e.g. the .npz filename)
+
+    Returns:
+        dict with keys: name, task, T, duration, fps, ik_fail, npz_success,
+                        ok, error
+    """
     actions = data["action"]
     T = actions.shape[0]
-    print(f"[Load] {Path(args.traj).name}  Task: {data.get('language_instruction','?')}  T={T}")
+    task = str(data.get("language_instruction", "?"))
 
-    print(f"\nWarming up {args.warmup:.0f}s — focus Unity! ", end="", flush=True)
-    for i in range(int(args.warmup), 0, -1):
-        print(f"{i}...", end="", flush=True)
-        time.sleep(1)
-    print()
+    if not quiet:
+        print(f"[Load] {name}  Task: {task}  T={T}")
 
-    joycon = JoyConClient()
-    obs = ObsClient()
-    robot = get_robot("so100")
-    print("[Connect] JoyConReceiver :5555 + TrainingServer :5556")
+    # ── Per-file eef fast-path eligibility ──────────────────────────────
+    eef_ok, obs_eef, obs_joints, bases = _compute_eef_eligibility(data, ik, ik_target)
+    if any(eef_ok):
+        print(f"[IK] eef fast path: R={eef_ok[0]} L={eef_ok[1]} "
+              f"(stale obs → pose path)")
 
     obs.reset()
     time.sleep(1.0)
-    arm_q_warm = _go_home(joycon, robot)  # home IK solutions as warm-start (matches collect)
+    arm_q_warm = _go_home(joycon, ik)
     init = obs.get_obs()
-    print(f"[Init] R EEF: {init['robot0_eef_pos']}")
+    if not quiet:
+        print(f"[Init] R EEF: {init['robot0_eef_pos']}")
 
     # ── Per-arm virtual Joy-Con state ──────────────────────────────────
-    # target_pose = [x_r, 0.0, z_r, roll_r, pitch_r, yaw_r] — same format as Joy-Con get_control()
     home_tp = [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0]
     target_pose = [home_tp.copy(), home_tp.copy()]
-    # World-frame pose tracking: accumulated in float directly from the
-    # action deltas.  NOT rebuilt from target_pose — the gimbal-lock yaw/roll
-    # approximation in _world_to_target_pose used to round-trip into position
-    # error through target_pose → _target_pose_to_world → delta.
     wp_home, wq_home = _target_pose_to_world(home_tp)
     world_pos = [wp_home.copy(), wp_home.copy()]
     world_quat = [wq_home.copy(), wq_home.copy()]
     ik_fail_count = [0, 0]
-
-    # Last successful joint command per arm (initialized empty; sent after first IK success)
     last_joints = [None, None]
     last_grip = [0.0, 0.0]
 
-    dt = 1.0 / args.fps
-    print(f"\nReplaying {T} steps at {args.fps} Hz via virtual Joy-Con + lerobot_IK...")
+    dt = 1.0 / fps
+    if not quiet:
+        print(f"\nReplaying {T} steps at {fps} Hz via virtual Joy-Con + {ik[0].name} IK...")
     t_start = time.time()
     for t in range(T):
         loop_start = time.perf_counter()
@@ -410,32 +457,38 @@ def main():
 
         for arm_idx in range(2):
             base = arm_idx * 7
-            dpos = act[base:base+3].astype(float)       # world-frame position delta
-            drot = act[base+3:base+6].astype(float)     # world-frame axis-angle rotation delta
-            gripper_state = float(act[base+6])           # raw gripper (0=open, 1=closed) — NO inversion
+            dpos = act[base:base+3].astype(float)
+            drot = act[base+3:base+6].astype(float)
+            gripper_state = float(act[base+6])
 
             # ── Step 1: apply world-frame delta to tracked pose ───────
             world_pos[arm_idx] = world_pos[arm_idx] + dpos
 
-            # Rotation delta: axis-angle → quaternion → apply (world-frame left-multiply)
             if np.linalg.norm(drot) > 1e-10:
-                q_delta = R.from_rotvec(drot).as_quat()  # scipy: [x, y, z, w]
+                q_delta = R.from_rotvec(drot).as_quat()
                 world_quat[arm_idx] = quat_multiply(q_delta, world_quat[arm_idx])
 
-            # ── Step 2: world pose → target_pose (IK input only) ─────
-            # Pass previous target_pose for Z-X-Z branch disambiguation
-            target_pose[arm_idx] = _world_to_target_pose(
-                world_pos[arm_idx], world_quat[arm_idx],
-                prev_target_pose=target_pose[arm_idx])
+            # ── Step 2: solve joints via the selected IK backend ──────
+            joints5 = None
+            if eef_ok[arm_idx] and _eef_obs_valid(obs_eef[arm_idx][t], bases[arm_idx]):
+                eef_arm = _obs_eef_to_arm(obs_eef[arm_idx][t], bases[arm_idx])
+                q_warm = arm_q_warm[arm_idx]
+                if not np.all(np.abs(obs_joints[arm_idx][t]) < 1e-6):
+                    q_warm = _obs_joints_to_arm(obs_joints[arm_idx][t])
+                joints5 = ik[arm_idx].solve_eef_pos(eef_arm, q_warm)
+            else:
+                target_pose[arm_idx] = _world_to_target_pose(
+                    world_pos[arm_idx], world_quat[arm_idx],
+                    prev_target_pose=target_pose[arm_idx])
+                joints5, new_q = ik[arm_idx].solve(
+                    target_pose[arm_idx].copy(), gripper_state, arm_q_warm[arm_idx])
+                if joints5 is not None:
+                    arm_q_warm[arm_idx] = new_q
 
-            # ── Step 3: compute robot command (EXACT same as collect) ─
-            joints, grip, new_q = _compute_robot_command(
-                target_pose[arm_idx].copy(), gripper_state, arm_q_warm[arm_idx], robot)
-
-            if joints is not None:
-                arm_q_warm[arm_idx] = new_q
+            if joints5 is not None:
+                joints = np.concatenate((joints5, [gripper_to_jaw(gripper_state)]))
                 last_joints[arm_idx] = joints
-                last_grip[arm_idx] = grip
+                last_grip[arm_idx] = gripper_state
                 ik_fail_count[arm_idx] = 0
             else:
                 ik_fail_count[arm_idx] += 1
@@ -444,14 +497,11 @@ def main():
                     print(f"  [IK FAIL t={t} arm={arm_idx}] x_r={tp[0]:.4f} z_r={tp[2]:.4f} "
                           f"roll_r={tp[3]:.3f} pitch_r={tp[4]:.3f} yaw_r={tp[5]:.3f} "
                           f"(fail #{ik_fail_count[arm_idx]})")
-                # Fallback: keep last successful joint command (don't move on IK failure)
-                # warm-start is NOT updated — keep the last good solution
 
-        # Send joint commands (use last-known-good on first frames before IK succeeds)
         if last_joints[0] is not None and last_joints[1] is not None:
             joycon.send(last_joints[0], last_grip[0], last_joints[1], last_grip[1])
 
-        if t % 50 == 0:
+        if t % 50 == 0 and not quiet:
             print(f"  t={t}/{T}  target_pose_R=[{target_pose[0][0]:.3f},{target_pose[0][2]:.3f},"
                   f"r={target_pose[0][3]:.2f},p={target_pose[0][4]:.2f},y={target_pose[0][5]:.2f}]")
 
@@ -464,11 +514,173 @@ def main():
 
     time.sleep(0.5)
     final = obs.get_obs()
-    print(f"\nInit EEF Z: {init['robot0_eef_pos'][2]:.4f}")
-    print(f"Final EEF Z: {final['robot0_eef_pos'][2]:.4f}")
-    print(f"Init joints: {[f'{j:.3f}' for j in init['robot0_joint_pos']]}")
-    print(f"Final joints: {[f'{j:.3f}' for j in final['robot0_joint_pos']]}")
-    print(f"IK failures: R={ik_fail_count[0]} L={ik_fail_count[1]} / {T}")
+    if not quiet:
+        print(f"\nInit EEF Z: {init['robot0_eef_pos'][2]:.4f}")
+        print(f"Final EEF Z: {final['robot0_eef_pos'][2]:.4f}")
+        print(f"Init joints: {[f'{j:.3f}' for j in init['robot0_joint_pos']]}")
+        print(f"Final joints: {[f'{j:.3f}' for j in final['robot0_joint_pos']]}")
+        print(f"IK failures: R={ik_fail_count[0]} L={ik_fail_count[1]} / {T}")
+
+    return {
+        "name": name,
+        "task": task,
+        "T": T,
+        "duration": total,
+        "fps": int(T) / total,
+        "ik_fail": ik_fail_count,
+        "npz_success": _npz_success(data),
+        "ok": (ik_fail_count[0] == 0 and ik_fail_count[1] == 0
+               and last_joints[0] is not None and last_joints[1] is not None),
+        "error": None,
+    }
+
+
+# ── Summary table ──────────────────────────────────────────────────────────
+
+def _print_summary(results):
+    """Columnar per-file summary + totals."""
+    ok_count = sum(1 for r in results if r["ok"])
+    npz_ok = sum(1 for r in results if r["npz_success"] is True)
+    npz_total = sum(1 for r in results if r["npz_success"] is not None)
+    total_time = sum(r["duration"] for r in results if r.get("duration"))
+
+    print(f"\n{'='*95}")
+    print(f"[Batch] replay OK {ok_count}/{len(results)}", end="")
+    if npz_total:
+        print(f"   (npz success {npz_ok}/{npz_total})")
+    else:
+        print()
+    print(f"{'file':<52s} {'T':>5s}  {'dur(s)':>7s}  {'IK_fail R/L':>11s}  {'npz':>4s}  verdict")
+    print("-" * 95)
+    for r in results:
+        dur = f"{r['duration']:.1f}" if r.get("duration") else "-"
+        if r.get("ik_fail"):
+            ikf = f"{r['ik_fail'][0]}/{r['ik_fail'][1]}"
+        else:
+            ikf = "-"
+        if r["npz_success"] is True:
+            ns = "yes"
+        elif r["npz_success"] is False:
+            ns = "no"
+        else:
+            ns = "?"
+        if r["error"]:
+            verdict = "ERR"
+        elif r["ok"]:
+            verdict = "PASS"
+        else:
+            verdict = "FAIL"
+        notes = f"  ({r['error']})" if r["error"] else ""
+        print(f"{r['name']:<52s} {r.get('T',0):>5d}  {dur:>7s}  {ikf:>11s}  {ns:>4s}  {verdict}{notes}")
+    print("-" * 95)
+    print(f"Totals: replay OK {ok_count}/{len(results)}", end="")
+    if npz_total:
+        print(f"   npz success {npz_ok}/{npz_total}   total time {total_time:.1f}s")
+    else:
+        print(f"   total time {total_time:.1f}s")
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--traj",
+        default=r"C:\vla\my\DatasetsCollector\demos\new\episode_0001_pick_up_the_red_block_20260728_220541_success.npz")
+    parser.add_argument("--fps", type=float, default=50)
+    parser.add_argument("--warmup", type=float, default=3.0)
+    parser.add_argument("--ik-backend", default="mujoco",
+                        choices=["lerobot", "mujoco", "placo"])
+    parser.add_argument("--ik-target", default="auto", choices=["auto", "pose", "eef"])
+    parser.add_argument("--dir", default=None,
+                        help="batch mode: replay ALL *.npz under this dir (recursive)")
+    parser.add_argument("--filter", default=None,
+                        help="only episodes whose language_instruction contains this substring")
+    parser.add_argument("--quiet", action="store_true",
+                        help="suppress per-frame/per-episode verbose prints (batch)")
+    args = parser.parse_args()
+
+    # ── IK backend (ONE INSTANCE PER ARM — created once, reused across episodes)
+    ik = [create_ik(args.ik_backend) for _ in range(2)]
+    print(f"[IK] backend={ik[0].name}  target-mode={args.ik_target}")
+    if args.ik_target == "eef" and ik[0].name != "mujoco":
+        print(f"[WARN] --ik-target eef requires --ik-backend mujoco; "
+              f"falling back to pose path")
+
+    # ── Resolve file list ───────────────────────────────────────────────
+    files = None
+    if args.dir:
+        files = sorted(Path(args.dir).rglob("*.npz"))
+        if args.filter:
+            needle = args.filter.lower()
+            keep = []
+            for f in files:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        with np.load(f, allow_pickle=True) as d:
+                            if needle in str(d.get("language_instruction", "")).lower():
+                                keep.append(f)
+                except Exception:
+                    pass
+            files = keep
+            print(f"[Batch] filter '{args.filter}': {len(files)} files match")
+        if not files:
+            raise SystemExit(f"No .npz (matching '{args.filter or '*'}') under {args.dir}")
+
+    # ── Warmup countdown — ONCE ─────────────────────────────────────────
+    print(f"\nWarming up {args.warmup:.0f}s — focus Unity! ", end="", flush=True)
+    for i in range(int(args.warmup), 0, -1):
+        print(f"{i}...", end="", flush=True)
+        time.sleep(1)
+    print()
+
+    # ── TCP clients — created ONCE, persist across episodes ─────────────
+    joycon = JoyConClient()
+    obs = ObsClient()
+    print("[Connect] JoyConReceiver :5555 + TrainingServer :5556")
+
+    # ── Batch loop ──────────────────────────────────────────────────────
+    if files is not None:
+        print(f"[Batch] {len(files)} trajectories under {args.dir}")
+        results = []
+        for f in files:
+            print(f"\n{'='*70}\n[{len(results)+1}/{len(files)}] {f.name}\n{'='*70}")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    with np.load(f, allow_pickle=True) as data:
+                        res = replay_episode(joycon, obs, ik, data, args.fps,
+                                             args.ik_target, name=f.name,
+                                             quiet=args.quiet)
+                results.append(res)
+            except ConnectionError as e:
+                results.append({"name": f.name, "ok": False,
+                                "error": f"Unity disconnected: {e}", "T": 0,
+                                "duration": 0, "ik_fail": [0, 0],
+                                "npz_success": None, "fps": 0, "task": "?"})
+                print(f"  ERROR: {results[-1]['error']} — aborting batch")
+                break
+            except Exception as e:
+                traceback.print_exc()
+                results.append({"name": f.name, "ok": False, "error": str(e),
+                                "T": 0, "duration": 0, "ik_fail": [0, 0],
+                                "npz_success": None, "fps": 0, "task": "?"})
+                continue
+        _print_summary(results)
+    else:
+        # ── Single-file path ────────────────────────────────────────────
+        traj_path = Path(args.traj)
+        if traj_path.is_dir():
+            raise SystemExit(
+                f"'{args.traj}' is a directory, not a .npz file.\n"
+                f"Use --dir for batch replay: python replay_action_via_ik.py --dir \"{args.traj}\"")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with np.load(args.traj, allow_pickle=True) as data:
+                replay_episode(joycon, obs, ik, data, args.fps,
+                               args.ik_target, name=Path(args.traj).name,
+                               quiet=args.quiet)
+
     joycon.close()
     obs.close()
 

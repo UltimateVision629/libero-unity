@@ -29,21 +29,19 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, r"C:\vla\lerobot-kinematics")
 sys.path.insert(0, str(Path(__file__).parent))  # replay_action_via_ik.py
 
 import replay_action_via_ik as replay_mod  # noqa: E402
 
 from replay_action_via_ik import (  # noqa: E402
     CONTROL_GLIMIT,
-    _INIT_ARM_Q,
     _SO100_HOME_XYZ,
-    _compute_robot_command,
     _target_pose_to_world,
     _world_to_target_pose,
     quat_multiply,
+    INIT_ARM_Q,
 )
-from lerobot_kinematics import get_robot  # noqa: E402
+from arm_ik import create_ik  # noqa: E402
 from scipy.spatial.transform import Rotation as R  # noqa: E402
 
 DEFAULT_TRAJ = r"C:\vla\my\DatasetsCollector\demos\episode_0001_pick_up_the_red_block_20260728_220541_success.npz"
@@ -83,25 +81,8 @@ def patch_yimpl():
         world_quat = quat_multiply(q_base, q_wrist)
         return np.array([world_x, world_y, world_z]), world_quat
 
-    def patched_robot_command(target_pose, gripper_state, current_arm_q, robot):
-        # y_r from target_pose[1] instead of hardcoded 0.01
-        tp = [float(v) for v in target_pose]
-        for i in range(6):
-            tp[i] = max(CONTROL_GLIMIT[0][i], min(CONTROL_GLIMIT[1][i], tp[i]))
-        x_r, y_r, z_r, roll_r, pitch_r, yaw_r = tp
-        pitch_r = -pitch_r
-        roll_r = roll_r - math.pi / 2
-        right_target_gpos = np.array([x_r, y_r, z_r, roll_r, pitch_r, 0.0])
-        from lerobot_kinematics import lerobot_IK
-        qpos_inv, ik_success = lerobot_IK(current_arm_q, right_target_gpos, robot=robot)
-        if ik_success:
-            target_qpos = np.concatenate(([yaw_r], qpos_inv[:4], [gripper_state]))
-            return target_qpos, gripper_state, target_qpos[1:5].copy()
-        return None, gripper_state, current_arm_q
-
     replay_mod._world_to_target_pose = patched_world_to_tp
     replay_mod._target_pose_to_world = patched_tp_to_world
-    replay_mod._compute_robot_command = patched_robot_command
 
 
 def patch_plan_b():
@@ -248,7 +229,7 @@ def roundtrip_self_test(n_trials=50, seed=1):
     return worst_pos
 
 
-def simulate(actions, robot, warm_from_home, debug_frames=0, dump_tp=None,
+def simulate(actions, ik, warm_from_home, debug_frames=0, dump_tp=None,
              plan_a=True):
     """Replay simulation.
 
@@ -272,10 +253,10 @@ def simulate(actions, robot, warm_from_home, debug_frames=0, dump_tp=None,
     world_quat = [wq_home.copy(), wq_home.copy()]
     tp_rows = []  # [t, arm, x, z, roll, pitch, yaw, ik_ok]
     home_target = [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0]
-    warm = [_INIT_ARM_Q.copy(), _INIT_ARM_Q.copy()]
+    warm = [INIT_ARM_Q.copy(), INIT_ARM_Q.copy()]
     if warm_from_home:
         for a in range(2):
-            _, _, nq = _compute_robot_command(home_target.copy(), 0.0, warm[a], robot)
+            _, nq = ik[a].solve(home_target.copy(), 0.0, warm[a])
             warm[a] = nq
 
     ik_fail = [0, 0]
@@ -323,15 +304,14 @@ def simulate(actions, robot, warm_from_home, debug_frames=0, dump_tp=None,
                     over_limit += 1
                     break
 
-            joints, grip_out, nq = replay_mod._compute_robot_command(
-                target_pose[a].copy(), grip, warm[a], robot)
-            if joints is not None:
+            joints5, nq = ik[a].solve(target_pose[a].copy(), grip, warm[a])
+            if joints5 is not None:
                 if prev_j[a] is not None:
-                    dq = float(np.max(np.abs(joints[1:5] - prev_j[a])))
+                    dq = float(np.max(np.abs(joints5 - prev_j[a])))
                     max_dq[a] = max(max_dq[a], dq)
                     if dq > 0.3:
                         branch_jumps += 1
-                prev_j[a] = joints[1:5].copy()
+                prev_j[a] = joints5.copy()
                 warm[a] = nq
             else:
                 ik_fail[a] += 1
@@ -361,6 +341,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--traj", default=DEFAULT_TRAJ)
+    ap.add_argument("--dir", default=None,
+                    help="batch mode: validate ALL *.npz under this dir "
+                         "(recursive), print a summary table")
+    ap.add_argument("--ik-backend", default="mujoco",
+                    choices=["lerobot", "mujoco", "placo"])
     ap.add_argument("--home-warmstart", action="store_true",
                     help="start IK from home IK solution (collect_datasets behavior)")
     ap.add_argument("--roundtrip", action="store_true", help="run round-trip self-test")
@@ -392,6 +377,42 @@ def main():
         patch_plan_b()
         print("[Patch] Plan B: position-constrained yaw + 2-angle extraction")
 
+    # ── Batch mode: validate every trajectory under a directory ──────────
+    if args.dir:
+        files = sorted(Path(args.dir).rglob("*.npz"))
+        if not files:
+            raise SystemExit(f"No .npz found under {args.dir}")
+        ik = [create_ik(args.ik_backend) for _ in range(2)]
+        print(f"[Batch] {len(files)} trajectories under {args.dir} "
+              f"(ik-backend={ik[0].name})")
+        hdr = (f"{'file':<52} {'T':>5} {'IK_fail':>8} {'pos_err(m)':>22} "
+               f"{'over_lim':>9} {'grip_sw':>7}  verdict")
+        print(hdr)
+        print("-" * len(hdr))
+        n_pass = 0
+        for f in files:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                data = np.load(f, allow_pickle=True)
+            actions = data["action"]
+            T = actions.shape[0]
+            # gripper switch count: closing action exists? (raw: 0=close, 1=open)
+            grip_sw = int((np.abs(np.diff(actions[:, 6])) > 0.5).sum()
+                          + (np.abs(np.diff(actions[:, 13])) > 0.5).sum())
+            res = simulate(actions, ik, True, plan_a=not args.legacy)
+            ik_ok = res["ik_fail"][0] == 0 and res["ik_fail"][1] == 0
+            pos_ok = max(res["max_recon_err"]) < 1e-3
+            jump_ok = res["branch_jumps"] == 0
+            verdict = "PASS" if (ik_ok and pos_ok and jump_ok) else "FAIL"
+            if verdict == "PASS":
+                n_pass += 1
+            err = f"{res['max_recon_err'][0]:.1e}/{res['max_recon_err'][1]:.1e}"
+            print(f"{f.name:<52} {T:>5} {res['ik_fail'][0]}/{res['ik_fail'][1]:<5} "
+                  f"{err:>22} {res['over_limit']:>5}/{T*2:<3} {grip_sw:>7}  {verdict}")
+        print("-" * len(hdr))
+        print(f"[Batch] PASS {n_pass}/{len(files)}")
+        return
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         data = np.load(args.traj, allow_pickle=True)
@@ -408,9 +429,10 @@ def main():
         if worst > 1e-3:
             print("  !! Round-trip inconsistency — forward/inverse transforms disagree")
 
-    robot = get_robot("so100")
+    ik = [create_ik(args.ik_backend) for _ in range(2)]
+    print(f"[IK] backend={ik[0].name}")
     tag = "home解起步" if args.home_warmstart else "_INIT_ARM_Q起步"
-    res = simulate(actions, robot, args.home_warmstart, debug_frames=args.debug,
+    res = simulate(actions, ik, args.home_warmstart, debug_frames=args.debug,
                    dump_tp=args.dump_tp, plan_a=not args.legacy)
 
     print(f"\n=== 模拟回放结果 ({tag}) ===")
