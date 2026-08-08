@@ -300,6 +300,28 @@ class JoyConClient:
             "robot_1": {"joints": [float(v) for v in joints_l], "gripper": float(grip_l), "button": 0},
         }
         self._sock.sendall((json.dumps(msg) + "\n").encode())
+        self._drain()
+
+    def _drain(self):
+        """Discard Unity's joint-feedback replies (one JSON line per message).
+
+        JoyConReceiver writes a feedback line back for every received message
+        (JoyConReceiver.cs WriteJointFeedback); this client never reads it.
+        Without draining, the OS receive buffer fills after minutes of
+        continuous replay, Unity's recv thread blocks inside stream.Write and
+        stops reading → the arm freezes at the last pose (the "freeze ~7
+        episodes into a batch" bug — time-based, independent of file content).
+        """
+        self._sock.setblocking(False)
+        try:
+            while True:
+                try:
+                    if not self._sock.recv(65536):
+                        break  # peer closed
+                except (BlockingIOError, InterruptedError):
+                    break  # buffer drained
+        finally:
+            self._sock.setblocking(True)
 
     def close(self):
         self._sock.close()
@@ -334,17 +356,14 @@ class ObsClient:
 
 # ── Home pose ──────────────────────────────────────────────────────────────
 
-def _go_home(joycon, ik):
-    """Send both arms to the naturally-bent ready pose via JoyConReceiver.
-
-    Same logic as collect_datasets._go_home(): runs IK for a home target pose,
-    sends joints via TCP :5555.
+def _compute_home(ik):
+    """Compute IK for the home target (no TCP send).
 
     Returns:
-        home_warm_q: [q_r, q_l] — the home IK solutions (5-DOF), to be used as
-        the IK warm-start of the replay loop (collect_datasets._go_home() keeps
-        these in self.current_arm_q_*; dropping them here can converge the
-        first replay frame to a different IK branch).
+        (j_home, g_home, warm_q) where:
+          j_home = [joints6_r, joints6_l]  (5-DOF + jaw)
+          g_home = [grip_r, grip_l]
+          warm_q = [q5_r, q5_l]  (5-DOF warm-start for replay loop)
     """
     home_target = [_SO100_HOME_XYZ[0], 0.0, _SO100_HOME_XYZ[2], 0.0, 0.0, 0.0]
 
@@ -356,15 +375,25 @@ def _go_home(joycon, ik):
         ik[arm_idx].reset_warm()  # per-episode warm reset (matches collect)
         joints, new_q = ik[arm_idx].solve(home_target.copy(), 0.0, warm_q[arm_idx])
         if joints is not None:
-            # Home pose: jaw closed (-0.174) — same as collect's gripper 0
             j_home[arm_idx] = np.concatenate((joints, [gripper_to_jaw(0.0)]))
             g_home[arm_idx] = 0.0
             warm_q[arm_idx] = new_q
 
+    return j_home, g_home, warm_q
+
+
+def _send_home(joycon, j_home, g_home):
+    """Send pre-computed home joints via JoyConReceiver (overwrites stale ctrl)."""
     if j_home[0] is not None and j_home[1] is not None:
         joycon.send(j_home[0], g_home[0], j_home[1], g_home[1])
     time.sleep(0.5)
     print("[Home] Arms sent to home pose.")
+
+
+def _go_home(joycon, ik):
+    """Compute + send home (single-episode convenience; batch uses split API)."""
+    j_home, g_home, warm_q = _compute_home(ik)
+    _send_home(joycon, j_home, g_home)
     return warm_q
 
 
@@ -430,9 +459,13 @@ def replay_episode(joycon, obs, ik, data, fps, ik_target, name="?", quiet=False)
         print(f"[IK] eef fast path: R={eef_ok[0]} L={eef_ok[1]} "
               f"(stale obs → pose path)")
 
+    # Pre-compute home joints BEFORE reset so we can send them immediately
+    # after mj_resetData — otherwise MjJoyConController's next frame reads
+    # the previous episode's stale joint targets from JoyConReceiver and
+    # drives the arm back to the old position during the sleep gap.
+    j_home, g_home, arm_q_warm = _compute_home(ik)
     obs.reset()
-    time.sleep(1.0)
-    arm_q_warm = _go_home(joycon, ik)
+    _send_home(joycon, j_home, g_home)   # overwrites stale JoyConReceiver data ASAP
     init = obs.get_obs()
     if not quiet:
         print(f"[Init] R EEF: {init['robot0_eef_pos']}")
@@ -595,6 +628,8 @@ def main():
                         help="batch mode: replay ALL *.npz under this dir (recursive)")
     parser.add_argument("--filter", default=None,
                         help="only episodes whose language_instruction contains this substring")
+    parser.add_argument("--start", default=None,
+                        help="batch mode: replay this file (name substring) and all AFTER it in sorted order")
     parser.add_argument("--quiet", action="store_true",
                         help="suppress per-frame/per-episode verbose prints (batch)")
     args = parser.parse_args()
@@ -624,6 +659,16 @@ def main():
                     pass
             files = keep
             print(f"[Batch] filter '{args.filter}': {len(files)} files match")
+        if args.start:
+            needle = Path(args.start).name   # 容忍带路径前缀
+            idx = next((i for i, f in enumerate(files) if f.name == needle), None)
+            if idx is None:
+                # Fallback: 子串匹配（兼容 --start 20260808_092900 时间戳定位）
+                idx = next((i for i, f in enumerate(files) if needle in f.name), None)
+            if idx is None:
+                raise SystemExit(f"--start '{args.start}' not found under {args.dir}")
+            files = files[idx:]
+            print(f"[Batch] starting at {files[0].name}: {len(files)} files remain")
         if not files:
             raise SystemExit(f"No .npz (matching '{args.filter or '*'}') under {args.dir}")
 

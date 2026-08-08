@@ -258,6 +258,23 @@ namespace LIBERO.Core
             Debug.Log("[MjJoyCon] Arm reset to home pose");
         }
 
+        /// <summary>
+        /// Scene was reset (mj_resetData): retarget both arms to the home
+        /// keyframe immediately and drop the cached Joy-Con pose.  Without
+        /// this, MjJoyConController keeps writing the previous episode's last
+        /// joints into ctrl and the arms return to the old position after
+        /// every reset (the stale-pose window between reset and the next
+        /// joint message).
+        /// </summary>
+        public void OnSceneReset()
+        {
+            ResetArm(_rArm);
+            ResetArm(_lArm);
+            if (JoyConInput != null)
+                JoyConInput.ClearPose();
+            _prevEefValid = false;
+        }
+
         public unsafe bool TryGetRobotState(int robotIndex, out float[] joints, out Vector3 eefPos, out Quaternion eefQuat)
         {
             joints = null;

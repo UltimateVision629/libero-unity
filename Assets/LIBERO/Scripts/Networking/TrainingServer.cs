@@ -216,6 +216,13 @@ namespace LIBERO.Networking
                 {
                     MujocoLib.mj_resetData(MjScene.Instance.Model, MjScene.Instance.Data);
                 }
+                // Retarget the arms to the home keyframe immediately and drop
+                // the cached Joy-Con pose — otherwise MjJoyConController keeps
+                // writing the previous episode's last joints into ctrl and the
+                // arms return to the old position after every reset.
+                var mjCtrl = FindObjectOfType<MjJoyConController>();
+                if (mjCtrl != null)
+                    mjCtrl.OnSceneReset();
                 Debug.Log("[TrainingServer] MuJoCo scene reset to initial state.");
             }
 

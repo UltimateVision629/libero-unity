@@ -262,6 +262,21 @@ namespace LIBERO.Networking
         }
 
         /// <summary>
+        /// Clear the cached poses and HasData flag (called on scene reset).
+        /// Prevents MjJoyConController from driving the arms with the last
+        /// pre-reset joints during the reset → new-episode message window.
+        /// </summary>
+        public void ClearPose()
+        {
+            lock (_poseLock)
+            {
+                _robot0Pose = default;
+                _robot1Pose = default;
+            }
+            HasData = false;
+        }
+
+        /// <summary>
         /// Serialise current joint angles into a single-line JSON and write back to Python.
         /// Called from the recv thread immediately after each received message.
         /// </summary>
