@@ -209,24 +209,29 @@ namespace LIBERO.Networking
             if (Env != null)
                 return ObsToJson(Env.ResetEnvironment());
 
-            // Fallback: reset MuJoCo scene to initial state
+            ResetScene();
+            return ObsToJson(CollectObsFallback());
+        }
+
+        /// <summary>
+        /// MuJoCo 场景重置 + 双臂回 home（与 TCP reset 命令同一逻辑，供 UI 按钮调用）。
+        /// mj_resetData 恢复初始状态；OnSceneReset 立即把双臂重定位到 home keyframe
+        /// 并丢弃缓存的 Joy-Con pose——否则 MjJoyConController 会继续把上一集最后的
+        /// 关节写进 ctrl，重置后机械臂回到旧位置。
+        /// </summary>
+        public void ResetScene()
+        {
             if (MjScene.InstanceExists)
             {
                 unsafe
                 {
                     MujocoLib.mj_resetData(MjScene.Instance.Model, MjScene.Instance.Data);
                 }
-                // Retarget the arms to the home keyframe immediately and drop
-                // the cached Joy-Con pose — otherwise MjJoyConController keeps
-                // writing the previous episode's last joints into ctrl and the
-                // arms return to the old position after every reset.
                 var mjCtrl = FindObjectOfType<MjJoyConController>();
                 if (mjCtrl != null)
                     mjCtrl.OnSceneReset();
                 Debug.Log("[TrainingServer] MuJoCo scene reset to initial state.");
             }
-
-            return ObsToJson(CollectObsFallback());
         }
 
         private int _stepCount = 0;

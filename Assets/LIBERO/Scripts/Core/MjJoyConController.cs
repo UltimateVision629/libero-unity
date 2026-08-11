@@ -301,9 +301,9 @@ namespace LIBERO.Core
                         joints[idx] = (float)data->qpos[MjScene.Instance.Model->jnt_qposadr[jid]];
                 }
 
-                // Read EEF directly from MuJoCo site_xpos (GameObject transform may lag)
+                // Read EEF directly from MuJoCo site_xpos/site_xmat (GameObject transform may lag)
                 eefPos = GetEefPos(robotIndex);
-                eefQuat = Quaternion.identity;  // orientation not needed for position-only IK
+                eefQuat = GetEefQuat(robotIndex);
 
                 return true;
             }
@@ -351,6 +351,54 @@ namespace LIBERO.Core
             if (sidRef < 0) return Vector3.zero;
             double* sp = MjScene.Instance.Data->site_xpos;
             return new Vector3((float)sp[sidRef * 3], (float)sp[sidRef * 3 + 1], (float)sp[sidRef * 3 + 2]);
+        }
+
+        private unsafe Quaternion GetEefQuat(int robotIndex)
+        {
+            string prefix = robotIndex == 0 ? "R_" : "L_";
+            ref int sidRef = ref (robotIndex == 0 ? ref _siteIdR : ref _siteIdL);
+            if (sidRef < 0)
+                sidRef = FindEefSite(prefix);
+            if (sidRef < 0) return Quaternion.identity;
+
+            // site_xmat: row-major 3x3 rotation matrix (MuJoCo frame).
+            // (The plugin binding exposes site_xmat but NOT site_xquat, so
+            // convert the matrix to a quaternion here.)
+            double* xm = MjScene.Instance.Data->site_xmat;
+            int i = sidRef;
+            double m00 = xm[i * 9 + 0], m01 = xm[i * 9 + 1], m02 = xm[i * 9 + 2];
+            double m10 = xm[i * 9 + 3], m11 = xm[i * 9 + 4], m12 = xm[i * 9 + 5];
+            double m20 = xm[i * 9 + 6], m21 = xm[i * 9 + 7], m22 = xm[i * 9 + 8];
+
+            // Matrix → quaternion (w,x,y,z), standard trace-branch method
+            double w, x, y, z;
+            double tr = m00 + m11 + m22;
+            if (tr > 0.0)
+            {
+                double s = System.Math.Sqrt(tr + 1.0) * 2.0;
+                w = 0.25 * s; x = (m21 - m12) / s; y = (m02 - m20) / s; z = (m10 - m01) / s;
+            }
+            else if (m00 > m11 && m00 > m22)
+            {
+                double s = System.Math.Sqrt(1.0 + m00 - m11 - m22) * 2.0;
+                w = (m21 - m12) / s; x = 0.25 * s; y = (m01 + m10) / s; z = (m02 + m20) / s;
+            }
+            else if (m11 > m22)
+            {
+                double s = System.Math.Sqrt(1.0 + m11 - m00 - m22) * 2.0;
+                w = (m02 - m20) / s; x = (m01 + m10) / s; y = 0.25 * s; z = (m12 + m21) / s;
+            }
+            else
+            {
+                double s = System.Math.Sqrt(1.0 + m22 - m00 - m11) * 2.0;
+                w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s;
+            }
+
+            // MuJoCo frame (x,y,z,w) → Unity frame, project convention
+            // (AGENTS.md: RH→LH `new Quaternion(y, -z, -x, w)`).  If the
+            // observed euler signs are inverted vs the command side, the
+            // alternative is `new Quaternion(-y, z, x, w)`.
+            return new Quaternion((float)y, (float)(-z), (float)(-x), (float)w);
         }
 
         private unsafe float[] GetCurrentQ(int robotIndex)

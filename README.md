@@ -55,6 +55,43 @@ Assets/LIBERO/
 
 MIT - See LICENSE file
 
+## Replay & Validation
+
+回放录制的 demo（开环执行）和离线验证：
+
+```bash
+conda activate lerobot-kin
+
+# 在线回放（需 Unity Play 模式运行中）
+python test/replay_action_via_ik.py --traj ../DatasetsCollector/demos/episode_0001_pick_up_the_red_block_20260728_220541_success.npz
+
+# 离线批量验证
+python test/validate_replay_offline.py --dir ../DatasetsCollector/demos
+
+# 验证 MuJoCo FK 与记录 EEF 的物理一致性
+python test/verify_eef_match.py
+```
+
+### IK 后端配置
+
+`arm_ik.py` 提供统一的 Strategy 模式接口，collect / replay / inference 三端共用 `--ik-backend` 切换：
+
+```bash
+# 默认 mujoco（与 Unity 同一物理模型，FK 误差 ~4.5e-6 m）
+python test/replay_action_via_ik.py --traj <file.npz>
+
+# 原 lerobot 后端（C 扩展，与 MuJoCo 差 30-50cm——旧行为）
+python test/replay_action_via_ik.py --traj <file.npz> --ik-backend lerobot
+```
+
+| 后端 | IK 方法 | 模型一致性 | 适用 |
+|------|---------|-----------|------|
+| `mujoco` (默认) | MuJoCo FK + scipy least_squares + Tikhonov 正则 | ✅ 同一模型 | 回放 / 推理 |
+| `lerobot` | C 扩展 fknm.pyd | ❌ 差 30-50cm（回放失败根因） | 采集保留兼容 |
+| `placo` | placo + URDF | ⚠️ URDF ≠ XML | stub |
+
+**回放目标模式**（`--ik-target`）：`eef` 直接用 `.npz` 记录的 MuJoCo EEF 观测（误差 2-7mm，仅 mujoco）；`pose` 走链式翻译（所有后端通用，误差 2-4cm rate-limit 滞后）；`auto` 自动检测 obs 有效性切换（默认）。
+
 ## References
 
 - Original LIBERO: https://github.com/Lifelong-Robot-Learning/LIBERO
