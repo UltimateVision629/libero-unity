@@ -115,7 +115,8 @@ class LerobotIK(ArmIK):
         # hard-coded in utils.so100_chain (identical to create_so100).
         self.robot = robot
 
-    def solve(self, target_pose, gripper, current_q):
+    def solve(self, target_pose, gripper, current_q, **kwargs):
+        # kwargs (ik_tol) ignored — lerobot 是解析求解，无容差概念
         tp = _clamp_target_pose(target_pose)
         yaw_r = tp[5]
         target_gpos = _target_gpos(tp)
@@ -165,7 +166,9 @@ class MuJoCoIK(ArmIK):
         """Forget the tracked translation warm (per-episode reset)."""
         self._lerobot_warm = None
 
-    def solve(self, target_pose, gripper, current_q):
+    def solve(self, target_pose, gripper, current_q, tol: float = 1e-8):
+        # tol: least_squares 容差（采集闭环可放宽到 1e-3 提速；
+        #      回放/推理保持默认 1e-8 精度）。见 collect_datasets.py --ik-tol。
         # 1. so100_ik translates Joy-Con target → joints (any model).
         #    Warm-start the translation with the TRACKED solution sequence
         #    (exactly as collect_datasets does).  Warm-starting it from the
@@ -186,8 +189,12 @@ class MuJoCoIK(ArmIK):
         joints_l = np.concatenate(([yaw_r], qpos_inv[:4]))
         eef_target = self.arm_ik.fk(joints_l)
 
-        # 3. MuJoCo IK to that position, warm-started from current_q
-        q_m = self.arm_ik.ik(current_q, eef_target)
+        # 3. MuJoCo IK to that position, warm-started from current_q.
+        #    腕部残差：把 so100 翻译的 wrist_flex/roll 作为目标——纯位置求解
+        #    会丢弃操作员的 pitch 意图（手腕不跟手），2026-09-01 修复。
+        #    so100 qpos_inv = [shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+        wrist_target = np.asarray(qpos_inv[2:4], dtype=np.float64)
+        q_m = self.arm_ik.ik(current_q, eef_target, tol=tol, wrist_target=wrist_target)
         return q_m, q_m.copy()
 
     def solve_eef_pos(self, eef_pos, current_q):

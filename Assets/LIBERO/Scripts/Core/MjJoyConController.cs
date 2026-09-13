@@ -145,12 +145,12 @@ namespace LIBERO.Core
         private unsafe void OnPreUpdate(object sender, MjStepArgs e)
         {
             // Warmup: hold arms at home pose so they don't droop at qpos=0
+            // （首帧直接瞬移 home，避免 qpos=0 直伸趴在桌面上的过渡状态）
             if (_warmup < WarmupFrames)
             {
                 if (_warmup == 0)
                 {
-                    ResetArm(_rArm);
-                    ResetArm(_lArm);
+                    HomeArms();
                 }
                 _warmup++;
                 return;
@@ -258,6 +258,23 @@ namespace LIBERO.Core
             Debug.Log("[MjJoyCon] Arm reset to home pose");
         }
 
+        /// <summary>Home 关节角（与 ResetArm 的 ctrl 目标一致，SetQpos 顺序见 _armJointTypes）。</summary>
+        private static readonly float[] HOME_JOINTS = { 0f, -3.14f, 3.14f, 0f, -1.57f };
+
+        /// <summary>
+        /// 双臂瞬移到 home（抓取准备）姿态：SetQpos 直写关节角 + ctrl 归位。
+        /// mj_resetData 会把所有关节 qpos 清零——qpos=0 时 SO100 链水平直伸
+        /// （部分链节 z≈0 趴在桌面上），只写 ctrl 的话要几十帧才摆到 home，
+        /// 期间臂会横扫桌面（可能碰动方块）。直写 qpos 后不存在过渡状态。
+        /// </summary>
+        private void HomeArms()
+        {
+            SetQpos(0, HOME_JOINTS);
+            SetQpos(1, HOME_JOINTS);
+            ResetArm(_rArm);
+            ResetArm(_lArm);
+        }
+
         /// <summary>
         /// Scene was reset (mj_resetData): retarget both arms to the home
         /// keyframe immediately and drop the cached Joy-Con pose.  Without
@@ -268,8 +285,7 @@ namespace LIBERO.Core
         /// </summary>
         public void OnSceneReset()
         {
-            ResetArm(_rArm);
-            ResetArm(_lArm);
+            HomeArms();
             if (JoyConInput != null)
                 JoyConInput.ClearPose();
             _prevEefValid = false;

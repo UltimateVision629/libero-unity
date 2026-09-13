@@ -5,7 +5,9 @@ Eliminates the lerobot_IK → MuJoCo FK mismatch by computing IK against the
 same model that runs in Unity.  The arm kinematic tree (body offsets, joint
 axes) in so_arm100.xml is identical to libero_pick_up_red_block.xml.
 
-Uses scipy.optimize.least_squares for position-only IK (5-DOF arm).
+Uses scipy.optimize.least_squares for IK (5-DOF arm).  The chain path adds
+a wrist residual (Wrist_Pitch/Roll targets from the so100 translation) so the
+wrist follows the operator's orientation; the fast path stays position-only.
 """
 from __future__ import annotations
 
@@ -100,8 +102,11 @@ class MuJoCoArmIK:
         target_eef_pos: np.ndarray,
         max_nfev: int = 40,
         reg: float = 0.3,
+        tol: float = 1e-8,
+        wrist_target: Optional[np.ndarray] = None,
+        wrist_w: float = 0.5,
     ) -> np.ndarray:
-        """Position-only IK: find arm joints to reach target EEF position.
+        """IK: find arm joints to reach target EEF position (and optionally wrist).
 
         The 5-DOF arm vs 3-constraint problem has a 2-D null space; a small
         Tikhonov-style regularization term `reg * (q - q0)` keeps consecutive
@@ -109,11 +114,19 @@ class MuJoCoArmIK:
         the position error dominates.  Unity's rate limiter (0.3 rad/step)
         cannot follow branch jumps, so smoothness matters as much as accuracy.
 
+        腕部残差（2026-09-01）：纯位置求解会把操作员的 pitch 意图丢弃——
+        EEF 位置几乎不随腕部上翘变化，空余自由度被正则锚在 warm-start
+        （手腕不跟手）。传入 wrist_target 后 5 DOF 满约束：位置 + 腕角同时解。
+
         Args:
             current_joints_rad: initial guess [5,] (radians)
             target_eef_pos: desired EEF position [3,] in base frame (metres)
             max_nfev: max FK evaluations per solve
             reg: regularization weight on (q - q0) deviation
+            wrist_target: [Wrist_Pitch, Wrist_Roll] 目标（弧度）；None = 纯位置
+                （fast path / 回放）
+            wrist_w: 腕部残差权重。位置残差单位是米（~0.1），角度是弧度
+                （~1-3），0.5 让腕角误差 ~0.1 rad 与 ~5mm 位置误差同级
 
         Returns:
             Joint angles [5,] (radians) that achieve the target position
@@ -128,7 +141,10 @@ class MuJoCoArmIK:
 
         def cost(q):
             pos = self.fk(q)
-            return np.concatenate([target - pos, reg * (q - q0)])
+            res = [target - pos, reg * (q - q0)]
+            if wrist_target is not None:
+                res.append(wrist_w * (q[3:5] - wrist_target))
+            return np.concatenate(res)
 
         result = least_squares(
             cost,
@@ -136,8 +152,8 @@ class MuJoCoArmIK:
             bounds=list(zip(*bounds)),
             method='trf',
             max_nfev=max_nfev,
-            ftol=1e-8,
-            xtol=1e-8,
+            ftol=tol,
+            xtol=tol,
         )
         return result.x
 

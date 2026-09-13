@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 using Mujoco;
 
 namespace LIBERO.Core
@@ -58,6 +59,19 @@ namespace LIBERO.Core
 
     public class ObservationCollector : MonoBehaviour
     {
+        /// <summary>
+        /// 播放器必须持续跑主循环，否则失焦时 Unity 暂停、Update() 不再被调用 →
+        /// TCP 命令（reset/get_obs/step）全部 30s 超时（2026-09-09 诊断：主线程
+        /// wchan=hrtimer_nanosleep、~10% CPU，xdotool 聚焦后命令 0.00–0.53s 秒回）。
+        /// 无头服务器/批处理没有窗口可聚焦，必须靠这个开关；此前靠 xdotool
+        /// keep-focus 循环掩盖，属于外部依赖。
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void ConfigurePlayer()
+        {
+            Application.runInBackground = true;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoCreate()
         {
@@ -94,9 +108,13 @@ namespace LIBERO.Core
             if (AgentviewCamera == null)
                 CreateAgentviewCamera();
 
-            // Compute render height from camera aspect ratio (e.g. 224 / 1.778 ≈ 126 for 16:9)
-            float aspect = AgentviewCamera != null ? AgentviewCamera.aspect : 16f / 9f;
-            _renderHeight = Mathf.RoundToInt(ImageWidth / aspect);
+            // 固定 16:9，不取屏幕宽高比：训练数据与 v2 均为 224×126。4:3 屏幕会让
+            // _renderHeight 变成 168、水平 FOV 从 91.5° 缩到 75.2°，推理画面被放大 1.22×
+            //（2026-09-09 诊断的 v3 FOV bug）。
+            const float kAgentviewAspect = 16f / 9f;
+            if (AgentviewCamera != null)
+                AgentviewCamera.aspect = kAgentviewAspect;
+            _renderHeight = Mathf.RoundToInt(ImageWidth / kAgentviewAspect);
 
             // 16:9 render targets
             _agentviewRenderRT = new RenderTexture(ImageWidth, _renderHeight, 24, RenderTextureFormat.ARGB32);
@@ -107,33 +125,178 @@ namespace LIBERO.Core
             // Square output textures (letterboxed)
             _agentviewTex = new Texture2D(ImageWidth, ImageWidth, TextureFormat.RGB24, false);
             _eyeInHandTex = new Texture2D(ImageWidth, ImageWidth, TextureFormat.RGB24, false);
+
+            // 构建版本不会自动更新天空盒环境光探针（SkyManager 只处理编辑器打开过的场景），
+            // 不调用会让画面比采集数据暗 25–30 灰度级 → 训练/推理输入分布不一致
+            //（2026-09-09 诊断：编辑器采集 mean≈129 vs 构建渲染 mean≈100）。
+            DynamicGI.UpdateEnvironment();
         }
+
+        private GameObject _siteGo;
+        private bool _siteLogged;
+        private Vector3 _sitePosLogged;
 
         private void CreateAgentviewCamera()
         {
             var camGo = new GameObject("Agentview Camera");
             camGo.transform.SetParent(transform);
             var cam = camGo.AddComponent<Camera>();
-
-            // Read position from MuJoCo XML <site name="agentview_site">
-            var site = GameObject.Find("agentview_site");
-            if (site != null)
-            {
-                camGo.transform.position = site.transform.position;
-                camGo.transform.rotation = site.transform.rotation;
-                Debug.Log($"[ObsCollector] Camera placed at site agentview_site: {site.transform.position}");
-            }
-            else
-            {
-                // Fallback hardcoded position
-                camGo.transform.position = new Vector3(0f, 0.50f, -0.70f);
-                Debug.Log("[ObsCollector] agentview_site not found, using fallback position");
-            }
-
-            camGo.transform.LookAt(Vector3.zero);
             cam.nearClipPlane = 0.1f;
             cam.enabled = true;
+            camGo.transform.position = new Vector3(0f, 0.50f, -0.70f);   // site 就绪前的兜底
+            camGo.transform.LookAt(Vector3.zero);   // 目视目标固定为原点（前方），不随桌移动
+
+            // 主视角：agentview 作为 MainCamera + 最高 depth（最后渲染 → Game 视图显示）。
+            // 场景 Main Camera（CameraSwitcher 8/9/0 视角）让出 tag，仍可切换查看。
+            foreach (var oldCam in Camera.allCameras)
+                if (oldCam != cam && oldCam.tag == "MainCamera")
+                    oldCam.tag = "Untagged";
+            cam.tag = "MainCamera";
+            cam.depth = 2;
+
             AgentviewCamera = cam;
+            _siteGo = null;
+            _siteLogged = false;
+        }
+
+        /// <summary>
+        /// 每帧把相机同步到 agentview_site（XML 定义的相机位）。site 在模型加载后
+        /// 才创建、transform 在物理步进后才同步——一次性放置容易踩时序（postInit
+        /// 已触发 / 变换未同步），导致相机停在兜底位置；逐帧同步保证 XML 里的相机
+        /// 改动一定生效。
+        /// 日志：位置首次同步或变化 &gt;10cm 时打印一次，Unity 坐标 (x, y, z)。
+        /// 若打印值不是最新 XML（(0, 0.4, -1.1)），说明 Unity 没重新导入 XML。
+        /// </summary>
+        private void Update()
+        {
+            if (AgentviewCamera == null) return;
+            if (_siteGo == null)
+                _siteGo = FindAgentviewSite();
+            if (_siteGo == null || _siteGo.transform.position == Vector3.zero)
+                return;   // 模型未加载或变换未同步，等下一帧
+
+            AgentviewCamera.transform.position = _siteGo.transform.position;
+            AgentviewCamera.transform.rotation = _siteGo.transform.rotation;
+            AgentviewCamera.transform.LookAt(Vector3.zero);
+
+            if (!_siteLogged || Vector3.Distance(_siteGo.transform.position, _sitePosLogged) > 0.1f)
+            {
+                _siteLogged = true;
+                _sitePosLogged = _siteGo.transform.position;
+                Debug.Log($"[ObsCollector] Camera synced to agentview_site: {_siteGo.transform.position}");
+            }
+
+            UpdateEyeInHandCamera();
+        }
+
+        private GameObject FindAgentviewSite()
+        {
+            // 前缀匹配：MuJoCo 导入的 GameObject 名可能带 _NNN 后缀，精确名
+            // GameObject.Find 会失败 → 相机落到兜底位置，XML 相机改动不生效。
+            foreach (var site in FindObjectsOfType<MjSite>())
+                if (site.MujocoName != null && site.MujocoName.StartsWith("agentview_site"))
+                    return site.gameObject;
+            return GameObject.Find("agentview_site");
+        }
+
+        // ── Eye-in-hand camera（2026-08-17，新场景 libero_put_block_in_box）───────────
+        // 懒创建：找到 XML 的 wrist_cam_site 才创建相机。每帧把相机放在
+        // R_eef_site 的【世界坐标系正上方 6cm】（不依赖 XML 局部系换算——局部偏移
+        // 经基座/Fixed_Jaw 两级 euler 旋转后方向不可靠，实测出现在爪侧方），
+        // 朝向 = wrist_cam_site 的 rotation（euler 已把 +Z 指向爪延伸方向，画面 =
+        // 爪下部 + 前方目标）。爪子动 → eef 位置实时更新 → 相机贴爪跟随。
+        // 旧场景无该 site → 永不创建，行为与之前完全一致。
+        private GameObject _wristSiteGo;
+        private GameObject _wristEefGo;
+        private bool _wristCamLogged;
+        private Vector3 _wristPosLogged;
+
+        private void UpdateEyeInHandCamera()
+        {
+            if (_wristSiteGo == null)
+                _wristSiteGo = FindSiteGo("wrist_cam_site");
+            if (_wristSiteGo == null || _wristSiteGo.transform.position == Vector3.zero)
+                return;   // 旧场景/模型未就绪 → 不创建
+
+            if (EyeInHandCamera == null)
+                CreateEyeInHandCamera();
+            if (_wristEefGo == null)
+                _wristEefGo = FindSiteGo("R_eef_site");
+            if (_wristEefGo == null)
+                return;
+
+            EyeInHandCamera.transform.position = _wristEefGo.transform.position
+                                                 + Vector3.up * 0.06f;   // 世界系正上方 6cm
+            // 朝向 = site（+Z 朝爪前方）+ 固定俯角 25°（先按 site 朝向再下倾，
+            // 任何爪姿态都成立；实测 -25° 为仰视、+25° 为俯视，想调俯视程度改 25f）
+            EyeInHandCamera.transform.rotation = _wristSiteGo.transform.rotation
+                                                 * Quaternion.Euler(25f, 0, 0);
+
+            if (!_wristCamLogged || Vector3.Distance(_wristSiteGo.transform.position, _wristPosLogged) > 0.1f)
+            {
+                _wristCamLogged = true;
+                _wristPosLogged = _wristSiteGo.transform.position;
+                Debug.Log($"[ObsCollector] Wrist camera synced to wrist_cam_site: {_wristSiteGo.transform.position}");
+            }
+        }
+
+        private GameObject FindSiteGo(string prefix)
+        {
+            foreach (var site in FindObjectsOfType<MjSite>())
+                if (site.MujocoName != null && site.MujocoName.StartsWith(prefix))
+                    return site.gameObject;
+            return GameObject.Find(prefix);
+        }
+
+        private void CreateEyeInHandCamera()
+        {
+            var camGo = new GameObject("Wrist Camera");
+            camGo.transform.SetParent(transform);
+            var cam = camGo.AddComponent<Camera>();
+            cam.nearClipPlane = 0.01f;   // 爪尖很近，小近平面
+            cam.enabled = true;
+
+            // 右上角小窗（2026-08-17）：wrist 相机渲染进小 RenderTexture →
+            // Game 视图右上角 RawImage 实时显示；相机不进主画面（主画面 = agentview）。
+            // obs 采集时 CaptureAndLetterbox 临时切换 targetTexture 再恢复，互不冲突。
+            _wristPreviewRT = new RenderTexture(ImageWidth, _renderHeight, 24, RenderTextureFormat.ARGB32);
+            _wristPreviewRT.Create();
+            cam.targetTexture = _wristPreviewRT;
+            cam.depth = 0;
+
+            // Canvas（ScreenSpaceOverlay，参照 ResetButton 的运行时创建模式）
+            var canvasGo = new GameObject("WristPreviewCanvas",
+                typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+            canvasGo.transform.SetParent(transform, false);
+            var canvas = canvasGo.GetComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            var scaler = canvasGo.GetComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+
+            // RawImage：右上角小窗
+            var imgGo = new GameObject("WristPreview", typeof(RectTransform), typeof(RawImage));
+            imgGo.transform.SetParent(canvasGo.transform, false);
+            var rt = imgGo.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(1f, 1f);   // top-right
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(1f, 1f);
+            rt.anchoredPosition = new Vector2(-20f, -20f);
+            rt.sizeDelta = new Vector2(224f, 126f);
+            _wristPreviewRawImage = imgGo.GetComponent<RawImage>();
+            _wristPreviewRawImage.texture = _wristPreviewRT;
+
+            EyeInHandCamera = cam;
+        }
+
+        private RenderTexture _wristPreviewRT;
+        private RawImage _wristPreviewRawImage;
+
+        /// <summary>显示/隐藏右上角腕部小窗（相机与 RT 恒在，obs 采集不受影响）。</summary>
+        public void SetWristPreview(bool show)
+        {
+            if (_wristPreviewRawImage != null)
+                _wristPreviewRawImage.enabled = show;
         }
 
         public Observation Collect(Dictionary<string, ObjectState> objectStates, RobotArmController robot)
@@ -266,6 +429,7 @@ namespace LIBERO.Core
         {
             if (_agentviewRenderRT != null) _agentviewRenderRT.Release();
             if (_eyeInHandRenderRT != null) _eyeInHandRenderRT.Release();
+            if (_wristPreviewRT != null) _wristPreviewRT.Release();
             if (_agentviewRenderTex != null) Destroy(_agentviewRenderTex);
             if (_eyeInHandRenderTex != null) Destroy(_eyeInHandRenderTex);
             if (_agentviewTex != null) Destroy(_agentviewTex);

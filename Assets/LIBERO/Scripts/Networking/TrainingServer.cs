@@ -192,6 +192,12 @@ namespace LIBERO.Networking
                         return HandleGetObs();
                     case "get_task":
                         return HandleGetTask();
+                    case "set_preview":
+                        // 推理/训练时隐藏右上角腕部小窗（采集时默认显示，不调用）
+                        bool show = !string.Equals(ExtractString(json, "show"), "false");
+                        var oc = FindObjectOfType<ObservationCollector>();
+                        if (oc != null) oc.SetWristPreview(show);
+                        return $"{{\"ok\":true,\"show\":{(show ? "true" : "false")}}}";
                     default:
                         return $"{{\"error\":\"unknown cmd: {cmd}\"}}";
                 }
@@ -226,11 +232,203 @@ namespace LIBERO.Networking
                 unsafe
                 {
                     MujocoLib.mj_resetData(MjScene.Instance.Model, MjScene.Instance.Data);
+                    RandomizeBlocks();
                 }
                 var mjCtrl = FindObjectOfType<MjJoyConController>();
                 if (mjCtrl != null)
                     mjCtrl.OnSceneReset();
                 Debug.Log("[TrainingServer] MuJoCo scene reset to initial state.");
+            }
+        }
+
+        // ── 方块随机摆放（2026-08-11）─────────────────────────────────
+        // 每次 reset 后把三个方块随机放到机械臂可达范围内：
+        //   红 → 右臂可达圈、蓝 → 左臂可达圈、绿 → 双臂可达交叠区（保证
+        //   "green with left/right arm" 两个任务在任意一次 reset 都可行）。
+        // 约束（俯视 x-y 平面，单位 m）：
+        //   · 与指配基座水平距离 ∈ [0.28, 0.46]（上限 0.46 = 数据实测最远抓取
+        //     0.461m（红块）；0.28 下限避开基座/折叠臂结构）；
+        //   · 离另一基座 ≥0.28（红离 L 基座、蓝离 R 基座）；
+        //   · 方块中心完全在桌面上（x∈[-0.475, 0.675], |y|≤0.475，已扣 0.025
+        //     半宽；桌台中心 2026-08-11 前移20cm 后移10cm → x=+0.10 → 桌面 x∈[-0.50, 0.70]）；
+        //   · 方块间中心距 ≥0.10（5cm 方块 + 5cm 间隙）；
+        //   · z=0.03；四元数直立 + 随机 yaw（±BLOCK_YAW_MAX，绕 Z 轴，数据增强）。
+        // 注（2026-08-11）：HomeArms 已把双臂瞬移 home（qpos 直写），不存在
+        // 趴平臂横扫的过渡状态，故不再排除基座前方走廊（旧版曾排除 dx∈[0.26,0.45]、
+        // |dy|<0.10 的窄条——实测 HomeArms 后无趴平态，且 qpos=0 趴平臂模拟
+        // 本就不碰动方块）。
+        // 拒绝采样 3000 次/方块，整组重试 3 轮；仍失败则保留 XML 默认位置。
+        private const float BLOCK_REACH_MIN = 0.28f;
+        private const float BLOCK_REACH_MAX = 0.46f;
+        private const float BLOCK_SEP = 0.10f;
+        private const float BLOCK_TABLE_X_MIN = -0.50f + 0.025f;
+        private const float BLOCK_TABLE_X_MAX = 0.70f - 0.025f;
+        private const float BLOCK_TABLE_Y = 0.50f - 0.025f;
+        private const float BLOCK_Z = 0.03f;
+        private const float BLOCK_YAW_MAX = 30f;   // 方块初始化随机 yaw（度）——数据增强（2026-09-01）
+
+        private static readonly (string name, int baseIdx, bool bothArms)[] _blockSpec = {
+            ("red_block_1", 0, false),    // 右臂可达圈
+            ("blue_block_1", 1, false),   // 左臂可达圈
+            ("green_block_1", 0, true),   // 双臂都可达
+        };
+        private static readonly (float x, float y)[] _armBases = {
+            (-0.70f, -0.20f),   // R 基座
+            (-0.70f,  0.20f),   // L 基座
+        };
+
+        private bool _singleArm;          // 单臂场景（无 L_ 关节）→ 三块全指右臂
+        private bool _singleArmChecked;
+
+        /// <summary>
+        /// 检测当前模型是否单臂（无 L_Rotation 关节）——libero_put_block_in_box 场景
+        /// 只保留右臂。单臂时 _blockSpec 的臂指派与"离另一基座"约束不再适用。
+        /// </summary>
+        private unsafe bool DetectSingleArm()
+        {
+            if (_singleArmChecked) return _singleArm;
+            _singleArmChecked = true;
+            _singleArm = false;
+            var model = MjScene.Instance.Model;
+            if ((IntPtr)model == IntPtr.Zero || model->names == null || model->njnt <= 0) return _singleArm;
+            byte* names = (byte*)model->names;
+            for (int j = 0; j < model->njnt; j++)
+            {
+                int adr = model->name_jntadr[j];
+                string jname = "";
+                for (int k = 0; k < 80; k++)
+                {
+                    char c = (char)names[adr + k];
+                    if (c == '\0') break;
+                    jname += c;
+                }
+                if (jname.StartsWith("L_Rotation")) return _singleArm;   // 有左臂
+            }
+            _singleArm = true;
+            Debug.Log("[TrainingServer] 单臂场景（无 L_ 关节）：三个方块全部指派右臂可达圈");
+            return _singleArm;
+        }
+
+        private unsafe void RandomizeBlocks()
+        {
+            var model = MjScene.Instance.Model;
+            var data = MjScene.Instance.Data;
+            if ((IntPtr)model == IntPtr.Zero || model->names == null) return;
+
+            bool singleArm = DetectSingleArm();   // 单臂场景：三块全指右臂、无另一基座约束
+
+            // 方块 body 前缀匹配（mj_name2id 因 _NNN 后缀失效，同 MjJoyConController）
+            // → body_jntadr 找到 freejoint → jnt_qposadr
+            var qposAdr = new Dictionary<string, int>();
+            byte* names = (byte*)model->names;
+            for (int b = 0; b < model->nbody; b++)
+            {
+                int adr = model->name_bodyadr[b];
+                string bname = "";
+                for (int k = 0; k < 80; k++)
+                {
+                    char c = (char)names[adr + k];
+                    if (c == '\0') break;
+                    bname += c;
+                }
+                foreach (var spec in _blockSpec)
+                {
+                    if (qposAdr.ContainsKey(spec.name)) continue;
+                    if (bname.StartsWith(spec.name) && model->body_jntnum[b] >= 1)
+                        qposAdr[spec.name] = model->jnt_qposadr[model->body_jntadr[b]];
+                }
+            }
+            if (qposAdr.Count != _blockSpec.Length)
+            {
+                Debug.LogWarning($"[TrainingServer] RandomizeBlocks: 找到 {qposAdr.Count}/{_blockSpec.Length} 个方块，跳过随机化");
+                return;
+            }
+
+            var positions = new Dictionary<string, (float x, float y)>();
+            var placed = new List<(float x, float y)>();
+            for (int round = 0; round < 3 && positions.Count < _blockSpec.Length; round++)
+            {
+                positions.Clear();
+                placed.Clear();
+                foreach (var spec in _blockSpec)
+                {
+                    int baseIdx = singleArm ? 0 : spec.baseIdx;   // 单臂场景全指右臂（R 基座）
+                    float bx = _armBases[baseIdx].x;
+                    float by = _armBases[baseIdx].y;
+                    bool found = false;
+                    for (int i = 0; i < 3000 && !found; i++)
+                    {
+                        float ang = UnityEngine.Random.Range(0f, 2f * Mathf.PI);
+                        float r = Mathf.Sqrt(UnityEngine.Random.Range(
+                            BLOCK_REACH_MIN * BLOCK_REACH_MIN, BLOCK_REACH_MAX * BLOCK_REACH_MAX));
+                        float x = bx + r * Mathf.Cos(ang);
+                        float y = by + r * Mathf.Sin(ang);
+                        if (x < BLOCK_TABLE_X_MIN || x > BLOCK_TABLE_X_MAX || Mathf.Abs(y) > BLOCK_TABLE_Y) continue;
+                        if (singleArm)
+                        {
+                            // 方块只在盒子右端点（y=-0.022）的右侧生成——agentview 画面右
+                            // = MuJoCo -Y = 机械臂侧；方块不越过盒子右端（画面左/盒子
+                            // 左后侧不生成）。注意：y 方向才是"画面左右"，x 约束会把方块
+                            // 推到 agentview 桌边（历史错误约束，勿恢复）
+                            if (y > -0.022f) continue;
+                            // 排除盒子区域
+                            // （XML box_1 中心 (-0.42, 0.02)，外半廓 0.0424 + 块半宽 0.025 + 间隙 0.02）
+                            float dB = Mathf.Sqrt((x + 0.42f) * (x + 0.42f) + (y - 0.02f) * (y - 0.02f));
+                            if (dB < 0.087f) continue;
+                        }
+                        else if (spec.bothArms)
+                        {
+                            // 绿：左臂也要够得到
+                            float dL = Mathf.Sqrt((x - _armBases[1].x) * (x - _armBases[1].x)
+                                                + (y - _armBases[1].y) * (y - _armBases[1].y));
+                            if (dL < BLOCK_REACH_MIN || dL > BLOCK_REACH_MAX) continue;
+                        }
+                        else
+                        {
+                            // 离另一基座的结构远一点（红→L 基座，蓝→R 基座）
+                            int other = 1 - spec.baseIdx;
+                            float dO = Mathf.Sqrt((x - _armBases[other].x) * (x - _armBases[other].x)
+                                                + (y - _armBases[other].y) * (y - _armBases[other].y));
+                            if (dO < BLOCK_REACH_MIN) continue;
+                        }
+                        bool sepOk = true;
+                        foreach (var p in placed)
+                        {
+                            float dx = p.x - x, dy = p.y - y;
+                            if (dx * dx + dy * dy < BLOCK_SEP * BLOCK_SEP) { sepOk = false; break; }
+                        }
+                        if (!sepOk) continue;
+                        found = true;
+                        placed.Add((x, y));
+                        positions[spec.name] = (x, y);
+                    }
+                }
+            }
+
+            if (positions.Count == _blockSpec.Length)
+            {
+                foreach (var kv in positions)
+                {
+                    int adr = qposAdr[kv.Key];
+                    data->qpos[adr + 0] = kv.Value.x;
+                    data->qpos[adr + 1] = kv.Value.y;
+                    data->qpos[adr + 2] = BLOCK_Z;
+                    // 四元数 wxyz：直立 + 随机 yaw（绕 MuJoCo Z 轴转 ±BLOCK_YAW_MAX，
+                    // 数据增强：方块姿态不再恒与臂对齐，模型须从图像读姿态）
+                    float yaw = UnityEngine.Random.Range(-BLOCK_YAW_MAX, BLOCK_YAW_MAX) * Mathf.Deg2Rad;
+                    data->qpos[adr + 3] = Mathf.Cos(yaw * 0.5f);
+                    data->qpos[adr + 4] = 0.0f;
+                    data->qpos[adr + 5] = 0.0f;
+                    data->qpos[adr + 6] = Mathf.Sin(yaw * 0.5f);
+                }
+                MujocoLib.mj_kinematics(model, data);   // 立即更新几何位置（下一帧也会更新）
+                string summary = "";
+                foreach (var kv in positions) summary += $"{kv.Key}=({kv.Value.x:F3},{kv.Value.y:F3}) ";
+                Debug.Log($"[TrainingServer] Blocks randomized: {summary.Trim()}");
+            }
+            else
+            {
+                Debug.LogWarning($"[TrainingServer] RandomizeBlocks 3 轮拒绝采样均失败（{positions.Count}/3），保留 XML 默认位置");
             }
         }
 
