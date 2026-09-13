@@ -19,8 +19,15 @@
 *.VC.db
 *.unityproj
 *.userprefs
-*.scene
-*.scene.meta
+# MuJoCo 场景（2026-09-13 收窄）
+#   原先是一条无锚定的 `*.scene`，把编辑器里的工作场景也一并吞了 ——
+#   在 Editor 里调相机/加组件后 git status 完全看不到，改动不会被版本化。
+#   现在按来源区分：
+#     Assets/LIBERO/*.scene        编辑器导入 XML 后保存的工作场景（源）→ 入库
+#     Assets/Local/Build/*.scene   BuildLinux.cs 构建时生成的产物（派生）→ 忽略
+#   XML 始终是几何的唯一来源：Assets/LIBERO/assets/robots/so100_mjcf/*.xml
+Assets/Local/Build/*.scene
+Assets/Local/Build/*.scene.meta
 
 # Asset meta files should NOT be ignored
 # !*.meta
