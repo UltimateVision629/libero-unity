@@ -18,12 +18,11 @@ import mujoco
 from scipy.optimize import least_squares
 
 
-# Default arm model: project-local copy in network/scripts/utils/so_100.xml
-# (was C:\vla\lerobot-kinematics\examples\so_100.xml — external dependency).
+# Default arm model: 本目录下的 utils/so_100.xml（2026-09-13 从
+# network/scripts/utils 搬来，让 libero-unity 自包含）。同目录的 assets/ 是它的网格。
 def _default_xml_path() -> str:
     local = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "..", "..", "network", "scripts",
-        "utils", "so_100.xml"))
+        os.path.dirname(__file__), "utils", "so_100.xml"))
     if os.path.exists(local):
         return local
     return r"C:\vla\lerobot-kinematics\examples\so_100.xml"  # legacy fallback

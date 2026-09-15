@@ -31,12 +31,16 @@ import sys
 
 import numpy as np
 
-# Local so100_chain (network/scripts/utils) — replaces lerobot_kinematics for
-# the Joy-Con → MuJoCo coordinate translation (pure numpy + scipy).
-_UTILS_ROOT = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "..", "..", "network", "scripts"))
-if _UTILS_ROOT not in sys.path:
-    sys.path.insert(0, _UTILS_ROOT)
+# Local so100_chain — replaces lerobot_kinematics for the Joy-Con → MuJoCo
+# coordinate translation (pure numpy + scipy).
+#
+# 2026-09-13：utils/ 搬到了**本目录下**（原在 network/scripts/utils）。
+# 之前这里指向 `../../network/scripts` —— 那是被 SmolVlaNetwork 取代的遗留仓库，
+# 而采集/回放/推理三条链都挂着它，一旦有人清理 network/ 就全断。
+# 现在 libero-unity 自包含，不再依赖任何兄弟仓库。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from utils.so100_chain import so100_ik  # noqa: E402
 
 # ═══════════════════════════════════════════════════════════════════════════
