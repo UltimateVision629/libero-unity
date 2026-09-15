@@ -18,7 +18,7 @@ using Mujoco;
 public static class BuildLinux
 {
     const string XmlAsset =
-        "Assets/LIBERO/assets/robots/so100_mjcf/libero_put_block_in_box.xml";
+        "Assets/UnityRobotEnv/assets/robots/so100_mjcf/libero_put_block_in_box.xml";
     const string SceneAsset =
         "Assets/Local/Build/libero_put_block_in_box.build.scene";
     const string OutDir = "Build/Linux";

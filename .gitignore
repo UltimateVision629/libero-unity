@@ -44,8 +44,12 @@ __pycache__/
 # Report files
 ReportAssets/
 
-# NuGet
-packages/
+# NuGet: this project does not use NuGet. The previous rule was a
+# bare `packages/`, which on Windows also matched Unity's `Packages/`
+# (case-insensitive) and silently kept the dependency manifest, the lock
+# file and the embedded MuJoCo plugin out of version control.
+# If NuGet is ever adopted, scope the rule to its actual location, e.g.
+#   /Assets/NuGet/packages/
 
 # MuJoCo auto-generated imports
 Assets/Local/MjImports/
@@ -56,3 +60,34 @@ opencode.json
 history/
 
 .vscode
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 第三方物体资产库：不入库
+#
+# 这些目录来自 LIBERO 基准自带的物体库，不是本移植工程的产物，且其中多个来源的
+# 再分发条款不明确/受限（目录名即出处）：
+#
+#   turbosquid_objects/        TurboSquid 购买的模型 —— 再分发取决于原始许可
+#   stable_hope_objects/       STABLeHOpe 物体库
+#   stable_scanned_objects/    扫描实物库
+#   articulated_objects/       铰接物体（橱柜/微波炉等）
+#   textures/                  上述物体所用贴图
+#
+# 本工程的 put_in_box 场景（libero_put_block_in_box.xml）**不依赖**以上任何目录：
+# 它只用 assets/robots/so100_mjcf/ 加 XML 里的程序化几何（box 类型）。
+# 实测 libero_put_block_in_box.scene 里对这些目录名的引用次数均为 0。
+#
+# 需要跑 LIBERO 其它任务时，请自行从上游获取这些资产：
+#   https://github.com/Lifelong-Robot-Learning/LIBERO
+# 放到 Assets/LIBERO/assets/<同名目录>/ 即可，无需改代码。
+#
+# ⚠️ .gitignore 只对**未跟踪**文件生效。这些目录此前已被跟踪，因此还需要：
+#   git rm -r --cached \
+#     Assets/LIBERO/assets/{turbosquid_objects,stable_hope_objects,stable_scanned_objects,articulated_objects,textures}
+# 把它们从索引移除（磁盘文件保留）。
+# ─────────────────────────────────────────────────────────────────────────────
+Assets/UnityRobotEnv/assets/turbosquid_objects/
+Assets/UnityRobotEnv/assets/stable_hope_objects/
+Assets/UnityRobotEnv/assets/stable_scanned_objects/
+Assets/UnityRobotEnv/assets/articulated_objects/
+Assets/UnityRobotEnv/assets/textures/

@@ -1,0 +1,14 @@
+{
+  "name": "UnityRobotEnv.Scripts",
+  "rootNamespace": "UnityRobotEnv",
+  "references": ["Unity.Robotics.UrdfImporter", "Mujoco.Runtime"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": true,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
