@@ -23,9 +23,10 @@
 #   原先是一条无锚定的 `*.scene`，把编辑器里的工作场景也一并吞了 ——
 #   在 Editor 里调相机/加组件后 git status 完全看不到，改动不会被版本化。
 #   现在按来源区分：
-#     Assets/LIBERO/*.scene        编辑器导入 XML 后保存的工作场景（源）→ 入库
+#     Assets/UnityRobotEnv/*.scene        编辑器导入 XML 后保存的工作场景（源）→ 入库
 #     Assets/Local/Build/*.scene   BuildLinux.cs 构建时生成的产物（派生）→ 忽略
-#   XML 始终是几何的唯一来源：Assets/LIBERO/assets/robots/so100_mjcf/*.xml
+#   XML 始终是几何的唯一来源：Assets/UnityRobotEnv/assets/robots/so100_mjcf/*.xml
+#   （2026-09-15 项目改名 UnityRobotEnv，原先的 Assets/LIBERO/ 已废弃）
 Assets/Local/Build/*.scene
 Assets/Local/Build/*.scene.meta
 
@@ -79,12 +80,12 @@ history/
 #
 # 需要跑 LIBERO 其它任务时，请自行从上游获取这些资产：
 #   https://github.com/Lifelong-Robot-Learning/LIBERO
-# 放到 Assets/LIBERO/assets/<同名目录>/ 即可，无需改代码。
+# 放到 Assets/UnityRobotEnv/assets/<同名目录>/ 即可，无需改代码。
 #
 # ⚠️ .gitignore 只对**未跟踪**文件生效。这些目录此前已被跟踪，因此还需要：
 #   git rm -r --cached \
-#     Assets/LIBERO/assets/{turbosquid_objects,stable_hope_objects,stable_scanned_objects,articulated_objects,textures}
-# 把它们从索引移除（磁盘文件保留）。
+#     Assets/UnityRobotEnv/assets/{turbosquid_objects,stable_hope_objects,stable_scanned_objects,articulated_objects,textures}
+# 把它们从索引移除（磁盘文件保留）。这一步已在 efc4e77/6b202e4 完成。
 # ─────────────────────────────────────────────────────────────────────────────
 Assets/UnityRobotEnv/assets/turbosquid_objects/
 Assets/UnityRobotEnv/assets/stable_hope_objects/
