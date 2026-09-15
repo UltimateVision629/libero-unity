@@ -86,8 +86,8 @@ history/
 #     Assets/LIBERO/assets/{turbosquid_objects,stable_hope_objects,stable_scanned_objects,articulated_objects,textures}
 # 把它们从索引移除（磁盘文件保留）。
 # ─────────────────────────────────────────────────────────────────────────────
-Assets/LIBERO/assets/turbosquid_objects/
-Assets/LIBERO/assets/stable_hope_objects/
-Assets/LIBERO/assets/stable_scanned_objects/
-Assets/LIBERO/assets/articulated_objects/
-Assets/LIBERO/assets/textures/
+Assets/UnityRobotEnv/assets/turbosquid_objects/
+Assets/UnityRobotEnv/assets/stable_hope_objects/
+Assets/UnityRobotEnv/assets/stable_scanned_objects/
+Assets/UnityRobotEnv/assets/articulated_objects/
+Assets/UnityRobotEnv/assets/textures/
