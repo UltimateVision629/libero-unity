@@ -1,14 +1,25 @@
-# LIBERO for Unity
+# UnityRobotEnv
 
-Unity implementation of the LIBERO benchmark - benchmarking knowledge transfer for lifelong robot learning.
+A Unity + MuJoCo environment for **dual-arm SO100 robot teleoperation and data collection**:
+Joy-Con teleop → MuJoCo physics in Unity → (observation, action) trajectories → VLA training.
 
-This is a minimum viable product (MVP) porting the core LIBERO simulation engine from Python/MuJoCo to Unity C#.
+Not a LIBERO product. This project began as a MuJoCo-in-Unity integration and grew into a
+standalone teleoperation/collection rig; the LIBERO-derived parts are limited and attributed
+in [`NOTICE.md`](NOTICE.md).
+
+| | |
+|---|---|
+| Simulator | Unity (Tuanjie 2022.3) + MuJoCo Unity plugin 3.2.4 |
+| Robot | SO-ARM100 / SO100, single right arm in the `put_in_box` scene |
+| Teleop | Joy-Con over a Python client → `JoyConReceiver` (TCP :5555) |
+| Data | `TrainingServer` (TCP :5556) serves `get_obs` / `step` / `reset` / `get_task` |
+| Recorded demos | 101 successful episodes, 38,892 frames |
 
 ## Project Structure
 
 ```
-Assets/LIBERO/
-├── assets/bddl_files/           BDDL task definition files (copied from Python project)
+Assets/UnityRobotEnv/
+├── assets/bddl_files/           BDDL task definitions (from upstream LIBERO)
 ├── Scripts/
 │   ├── BDDL/
 │   │   ├── BDDLToken.cs         Token types for BDDL lexer
@@ -99,11 +110,11 @@ LIBERO 任务，请自行从上游获取后放到对应路径：
 
 ```bash
 # 从上游 LIBERO 取得后，放到：
-Assets/LIBERO/assets/turbosquid_objects/      # TurboSquid 购买的模型
-Assets/LIBERO/assets/stable_hope_objects/     # STABLeHOpe 物体库
-Assets/LIBERO/assets/stable_scanned_objects/  # 扫描实物库
-Assets/LIBERO/assets/articulated_objects/     # 铰接物体（橱柜/微波炉等）
-Assets/LIBERO/assets/textures/                # 上述物体所用贴图
+Assets/UnityRobotEnv/assets/turbosquid_objects/      # TurboSquid 购买的模型
+Assets/UnityRobotEnv/assets/stable_hope_objects/     # STABLeHOpe 物体库
+Assets/UnityRobotEnv/assets/stable_scanned_objects/  # 扫描实物库
+Assets/UnityRobotEnv/assets/articulated_objects/     # 铰接物体（橱柜/微波炉等）
+Assets/UnityRobotEnv/assets/textures/                # 上述物体所用贴图
 ```
 
 上游地址：https://github.com/Lifelong-Robot-Learning/LIBERO

@@ -1,5 +1,9 @@
 # 第三方组件与归属声明 (NOTICE)
 
+本仓库原名 libero-unity，现更名为 **UnityRobotEnv**，以准确反映其定位：
+一套基于 Unity + MuJoCo 的 SO100 双臂遥操作与数据采集环境，**不是** LIBERO 的官方实现。
+更名不解除下列归属义务——尤其是从 LIBERO 移植的 BDDL 解析器（MIT）。
+
 本仓库包含或依赖以下第三方内容。使用、修改、再分发时请遵守各自的许可条款。
 
 ---
@@ -9,8 +13,8 @@
 - **来源**：https://github.com/Lifelong-Robot-Learning/LIBERO
 - **许可**：MIT License，Copyright (c) 2023 Lifelong Robot Learning
 - **本仓库中的体现**：
-  - `Assets/LIBERO/Scripts/` 下的 C# 移植代码（LIBERO 仿真核心的 Unity/C# 版本）
-  - `Assets/LIBERO/assets/bddl_files/` —— 从上游 Python 工程复制的 BDDL 任务定义
+  - `Assets/UnityRobotEnv/Scripts/` 下的 C# 移植代码（LIBERO 仿真核心的 Unity/C# 版本）
+  - `Assets/UnityRobotEnv/assets/bddl_files/` —— 从上游 Python 工程复制的 BDDL 任务定义
   - 场景构建 / 区域采样 / 位姿初始化等逻辑的移植
 - **合规要求**：MIT 要求保留版权声明与许可文本。见本目录 `LICENSE`。
 
@@ -24,16 +28,16 @@
 
 | 目录 | 出处 |
 |---|---|
-| `Assets/LIBERO/assets/turbosquid_objects/` | TurboSquid 购买的 3D 模型 |
-| `Assets/LIBERO/assets/stable_hope_objects/` | STABLeHOpe 物体库 |
-| `Assets/LIBERO/assets/stable_scanned_objects/` | 扫描实物库 |
-| `Assets/LIBERO/assets/articulated_objects/` | 铰接物体（橱柜/微波炉等） |
-| `Assets/LIBERO/assets/textures/` | 上述物体所用贴图 |
+| `Assets/UnityRobotEnv/assets/turbosquid_objects/` | TurboSquid 购买的 3D 模型 |
+| `Assets/UnityRobotEnv/assets/stable_hope_objects/` | STABLeHOpe 物体库 |
+| `Assets/UnityRobotEnv/assets/stable_scanned_objects/` | 扫描实物库 |
+| `Assets/UnityRobotEnv/assets/articulated_objects/` | 铰接物体（橱柜/微波炉等） |
+| `Assets/UnityRobotEnv/assets/textures/` | 上述物体所用贴图 |
 
 **排除原因**：这些资产的再分发条款不明确或受限（TurboSquid 模型的再分发取决于
 原始购买许可；STABLeHOpe 等库亦有各自条款）。它们**不是本移植工程的产物**。
 
-**获取方式**：从上游 LIBERO 仓库取得后，放到 `Assets/LIBERO/assets/<同名目录>/`
+**获取方式**：从上游 LIBERO 仓库取得后，放到 `Assets/UnityRobotEnv/assets/<同名目录>/`
 即可，无需修改代码。
 
 **为什么可以安全排除**：本工程的 `put_in_box` 场景
@@ -71,7 +75,7 @@
 ## 5. SO-ARM100 / SO100 模型
 
 - **来源**：TheRobotStudio 的 SO-ARM100 开源硬件项目
-- **本仓库中的体现**：`Assets/LIBERO/assets/robots/so100_mjcf/`
+- **本仓库中的体现**：`Assets/UnityRobotEnv/assets/robots/so100_mjcf/`
  （`so_arm100.xml`、`libero_put_block_in_box.xml`、`libero_pick_up_red_block.xml`
  及配套 STL 网格，共 45 个文件 / 约 3 MB）
 - **说明**：SO-ARM100 为开源项目；本仓库对其 MJCF 做了场景化改造
