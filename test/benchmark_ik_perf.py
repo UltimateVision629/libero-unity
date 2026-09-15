@@ -21,8 +21,9 @@ import time
 import numpy as np
 
 _TEST = os.path.dirname(os.path.abspath(__file__))
-_UTILS = os.path.abspath(os.path.join(_TEST, "..", "..", "network", "scripts"))
-for p in (_TEST, _UTILS):
+# utils/ 就在本目录下（2026-09-13 从 network/scripts/utils 搬来）——
+# 这里原先指向 ../../network/scripts，那条跨仓库路径已废弃。
+for p in (_TEST,):
     if p not in sys.path:
         sys.path.insert(0, p)
 

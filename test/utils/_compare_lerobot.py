@@ -1,15 +1,18 @@
 r"""Compare so100_chain FK/IK against the original lerobot_kinematics model.
 
-Requires lerobot_kinematics importable (runs in lerobot-kin conda env).
-Usage:
+要求 lerobot_kinematics 可导入（在 lerobot-kin conda 环境里跑）。
+用法（本文件在 libero-unity/test/utils/，2026-09-13 从 network/scripts/utils 搬来）：
     conda activate lerobot-kin
-    python C:\vla\my\network\scripts\utils\_compare_lerobot.py
+    python libero-unity\test\utils\_compare_lerobot.py
 """
+import os
 import sys
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 sys.path.insert(0, r"C:\vla\lerobot-kinematics")
-sys.path.insert(0, r"C:\vla\my\network\scripts")
+# 本文件在 utils/ 包**内部**，所以要把**父目录**（libero-unity/test）加进 sys.path，
+# 下面那句 `from utils import so100_chain` 才解析得到这个包。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import so100_chain
 from lerobot_kinematics import lerobot_IK, get_robot
