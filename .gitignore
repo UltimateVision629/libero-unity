@@ -44,8 +44,12 @@ __pycache__/
 # Report files
 ReportAssets/
 
-# NuGet
-packages/
+# NuGet: this project does not use NuGet. The previous rule was a
+# bare `packages/`, which on Windows also matched Unity's `Packages/`
+# (case-insensitive) and silently kept the dependency manifest, the lock
+# file and the embedded MuJoCo plugin out of version control.
+# If NuGet is ever adopted, scope the rule to its actual location, e.g.
+#   /Assets/NuGet/packages/
 
 # MuJoCo auto-generated imports
 Assets/Local/MjImports/

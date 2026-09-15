@@ -123,10 +123,22 @@ Assets/LIBERO/assets/textures/                # 上述物体所用贴图
 
 ## MuJoCo Unity 插件（依赖说明）
 
-本工程用 MuJoCo 的 Unity 插件把 MJCF 导入场景播放。该插件（Apache-2.0，来自
-https://github.com/google-deepmind/mujoco 的 `unity/` 目录）**不在本仓库中**，
-需要通过 Unity Package Manager 自行安装（本工程验证过 tag 3.2.4，与
-`Assets/mujoco.dll` 的原生库版本对齐）。
+本工程用 MuJoCo 的 Unity 插件把 MJCF 导入场景、驱动仿真与观测采集。该插件
+（Apache-2.0，来自 https://github.com/google-deepmind/mujoco 的 `unity/` 目录，
+版本 **3.2.4**）以**内嵌包**形式随仓库分发：
+
+```
+Packages/org.mujoco/           # Runtime 62 个 + Editor 14 个 C# 脚本
+Packages/org.mujoco/mujoco.dll # 原生库，与 Assets/mujoco.dll 版本对齐
+Packages/manifest.json         # 依赖清单（必须入库，否则包无法解析）
+```
+
+插件自带的 `Tests/` 已移除（需要完整 NUnit，内嵌使用不需要）。
+
+**注意 `Packages/` 必须在版本控制中。** 本工程早期因 `.gitignore` 里一条无锚定的
+`packages/` 规则（Windows 下大小写不敏感）误把整个 `Packages/` 排除，导致新克隆的
+仓库既没有依赖清单也没有插件，编辑器里看不到 MuJoCo 导入菜单。该规则已移除，
+`Packages/` 现已入库。
 
 ## 第三方归属
 
